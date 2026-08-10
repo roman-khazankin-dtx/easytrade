@@ -1,12 +1,14 @@
-import React from "react"
-import { Card, CardHeader } from "@mui/material"
+import React, { lazy, Suspense } from "react"
+import { Card, CardHeader, Skeleton } from "@mui/material"
 import InstrumentHeader from "./InstrumentHeader"
 import { useInstrument } from "../../contexts/InstrumentContext/context"
 import { useRouteLoaderData } from "react-router"
-import InstrumentPriceChart from "../charts/InstrumentPriceChart"
 import { LoaderIds } from "../../router"
 import { Price } from "../../api/price/types"
 import { useInstrumentPricesQuery } from "../../contexts/QueryContext/price/hooks"
+
+// Charts pull in recharts (~360 KiB); defer it so it stays out of the critical path.
+const InstrumentPriceChart = lazy(() => import("../charts/InstrumentPriceChart"))
 
 export default function FullInstrumentCard() {
     const { instrument } = useInstrument()
@@ -26,7 +28,9 @@ export default function FullInstrumentCard() {
                     },
                 }}
             />
-            <InstrumentPriceChart prices={data ?? []} />
+            <Suspense fallback={<Skeleton variant="rectangular" height={200} />}>
+                <InstrumentPriceChart prices={data ?? []} />
+            </Suspense>
         </Card>
     )
 }

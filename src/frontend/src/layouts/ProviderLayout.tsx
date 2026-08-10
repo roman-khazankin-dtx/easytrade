@@ -1,4 +1,4 @@
-import React from "react"
+import React, { lazy, Suspense } from "react"
 import { CssBaseline } from "@mui/material"
 import { login, logout } from "../api/login/login"
 import { getTransactions } from "../api/transaction/transactions"
@@ -11,12 +11,20 @@ import { getInstruments } from "../api/instrument/instruments"
 import { getPricesForInstrument, getLatestPrices } from "../api/price/price"
 import { FormatterProvider } from "../contexts/FormatterContext/context"
 import { getFeatureFlags } from "../api/featureFlags/problemPatterns"
-import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { NavigationProvider } from "../contexts/NavigationContext/context"
 import { getConfig } from "../api/featureFlags/config"
 import { getOrderStatus, getOrderStatusHistory } from "../api/creditCard/order"
 import { getAllVersions } from "../api/version/versions"
 import AppLayout from "./AppLayout"
+
+// Devtools are development-only; excluded from the production bundle entirely.
+const ReactQueryDevtools = import.meta.env.PROD
+    ? null
+    : lazy(() =>
+          import("@tanstack/react-query-devtools").then((m) => ({
+              default: m.ReactQueryDevtools,
+          }))
+      )
 
 export default function ProviderLayout() {
     return (
@@ -41,7 +49,11 @@ export default function ProviderLayout() {
                             <CssBaseline />
                             <AppLayout />
                         </NavigationProvider>
-                        <ReactQueryDevtools initialIsOpen={false} />
+                        {ReactQueryDevtools && (
+                            <Suspense fallback={null}>
+                                <ReactQueryDevtools initialIsOpen={false} />
+                            </Suspense>
+                        )}
                     </AuthProvider>
                 </ThemeProvider>
             </QueryClientProvider>

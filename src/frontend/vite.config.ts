@@ -13,5 +13,15 @@ export default defineConfig(({ mode }) => {
             port: 3000,
             allowedHosts: true,
         },
+        build: {
+            rollupOptions: {
+                output: {
+                    // We isolate core React dependencies here to keep them cached.
+                    manualChunks: {
+                        "react-vendor": ["react", "react-dom", "react-router"],
+                    },
+                },
+            },
+        },
     }
 })

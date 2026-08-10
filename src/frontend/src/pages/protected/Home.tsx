@@ -1,8 +1,6 @@
-import React from "react"
-import { Container, Stack } from "@mui/material"
+import React, { lazy, Suspense } from "react"
+import { Container, Skeleton, Stack } from "@mui/material"
 import AccountInfo from "../../components/AccountInfo"
-import InstrumentsTable from "../../components/InstrumentsTable"
-import TransactionsTable from "../../components/TransactionsTable"
 import { useTransactionQuery } from "../../contexts/QueryContext/transaction/hooks"
 import { useInstrumentsQuery } from "../../contexts/QueryContext/instrument/hooks"
 import { useLoaderData, useRouteLoaderData } from "react-router"
@@ -10,8 +8,20 @@ import { Instrument } from "../../api/instrument/types"
 import { useAuthUser } from "../../contexts/UserContext/context"
 import { Transaction } from "../../api/transaction/types"
 import { LoaderIds } from "../../router"
-import InstrumentsChart from "../../components/charts/InstrumentsChart"
-import TransactionsCharts from "../../components/charts/TransactionsCharts"
+
+// Charts pull in recharts (~360 KiB) and the tables pull in @mui/x-data-grid (~800 KiB);
+// defer them so they stay out of the critical path for the initial paint.
+const InstrumentsChart = lazy(
+    () => import("../../components/charts/InstrumentsChart")
+)
+const TransactionsCharts = lazy(
+    () => import("../../components/charts/TransactionsCharts")
+)
+const InstrumentsTable = lazy(() => import("../../components/InstrumentsTable"))
+const TransactionsTable = lazy(() => import("../../components/TransactionsTable"))
+
+const chartFallback = <Skeleton variant="rectangular" height={300} />
+const tableFallback = <Skeleton variant="rectangular" height={400} />
 
 export default function Home() {
     const { userId } = useAuthUser()
@@ -27,15 +37,23 @@ export default function Home() {
         <Container>
             <Stack spacing={2}>
                 <AccountInfo />
-                <InstrumentsChart instruments={instruments} />
-                <InstrumentsTable instruments={instruments} />
-                <TransactionsCharts
-                    transactions={transactionsData.data ?? []}
-                />
-                <TransactionsTable
-                    transactions={transactionsData.data ?? []}
-                    instruments={instruments}
-                />
+                <Suspense fallback={chartFallback}>
+                    <InstrumentsChart instruments={instruments} />
+                </Suspense>
+                <Suspense fallback={tableFallback}>
+                    <InstrumentsTable instruments={instruments} />
+                </Suspense>
+                <Suspense fallback={chartFallback}>
+                    <TransactionsCharts
+                        transactions={transactionsData.data ?? []}
+                    />
+                </Suspense>
+                <Suspense fallback={tableFallback}>
+                    <TransactionsTable
+                        transactions={transactionsData.data ?? []}
+                        instruments={instruments}
+                    />
+                </Suspense>
             </Stack>
         </Container>
     )
