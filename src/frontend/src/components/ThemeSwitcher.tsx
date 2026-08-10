@@ -1,5 +1,6 @@
 import React from "react"
-import { DarkMode, LightMode } from "@mui/icons-material"
+import DarkMode from "@mui/icons-material/DarkMode"
+import LightMode from "@mui/icons-material/LightMode"
 import { IconButton } from "@mui/material"
 import { useTheme } from "../contexts/ThemeContext/ThemeContext"
 
@@ -7,7 +8,7 @@ export function ThemeSwitcher() {
     const { isDarkTheme, toggleTheme } = useTheme()
 
     return (
-        <IconButton onClick={toggleTheme}>
+        <IconButton aria-label="button" onClick={toggleTheme}>
             {isDarkTheme ? <DarkMode /> : <LightMode />}
         </IconButton>
     )

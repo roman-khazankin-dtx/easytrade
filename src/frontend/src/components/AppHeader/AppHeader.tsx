@@ -32,7 +32,7 @@ export default function AppHeader() {
                     >
                         <Stack direction="row" alignItems="center">
                             {isLoggedIn && (
-                                <IconButton
+                                <IconButton aria-label="button"
                                     id="navigationToggler"
                                     size="large"
                                     edge="start"

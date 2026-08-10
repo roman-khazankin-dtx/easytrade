@@ -6,10 +6,8 @@ import { LoaderIds } from "../../router"
 
 export function useAuthUserData(): { user?: User; balance?: Balance } {
     const { userId } = useAuthUser()
-    const [userData, balanceData] = useRouteLoaderData(LoaderIds.user) as [
-        User?,
-        Balance?,
-    ]
+    const loaderData = useRouteLoaderData<[User, Balance]>(LoaderIds.user)
+    const [userData, balanceData] = loaderData ?? []
     return {
         user: useUserQuery(userId, userData).data,
         balance: useBalanceQuery(userId, balanceData).data,

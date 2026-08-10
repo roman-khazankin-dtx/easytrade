@@ -15,7 +15,7 @@ import AccountBalanceWalletIcon from "@mui/icons-material/AccountBalanceWallet"
 import CreditCardIcon from "@mui/icons-material/CreditCard"
 import { NavLink } from "react-router"
 import { ReactElement } from "react"
-import { Euro } from "@mui/icons-material"
+import Euro from "@mui/icons-material/Euro"
 import { useNavigation } from "../contexts/NavigationContext/context"
 import AddCardIcon from "@mui/icons-material/AddCard"
 

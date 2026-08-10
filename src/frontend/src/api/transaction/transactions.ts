@@ -1,7 +1,6 @@
 import { Transaction } from "./types"
 import { backends } from "../backend"
 import { Transaction as RawTransaction } from "../backend/transactions"
-import { DateTime } from "luxon"
 
 export async function getTransactions(
     userId: string,
@@ -37,9 +36,7 @@ function mapRawTransaction(
         amount: quantity,
         price: entryPrice,
         status: mapStatus(status),
-        endTime:
-            DateTime.fromISO(timestampClose, { zone: "utc" }).toISO() ??
-            timestampClose,
+        endTime: timestampClose ? new Date(timestampClose).toISOString() : timestampClose,
     }
 }
 

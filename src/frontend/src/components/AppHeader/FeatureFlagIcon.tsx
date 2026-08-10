@@ -9,7 +9,7 @@ export default function FeatureFlag() {
     const enabledFlagCount =
         flags?.filter(({ enabled }) => enabled)?.length ?? 0
     return (
-        <IconButton
+        <IconButton aria-label="button"
             to="/feature-flags"
             component={RouterLink}
             sx={{

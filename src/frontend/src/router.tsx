@@ -7,12 +7,6 @@ import {
 import ProviderLayout from "./layouts/ProviderLayout"
 import ProtectedLayout from "./layouts/ProtectedLayout"
 import PublicLayout from "./layouts/PublicLayout"
-import Login from "./pages/public/Login"
-import Signup from "./pages/public/Signup"
-import Home from "./pages/protected/Home"
-import Deposit from "./pages/protected/Deposit"
-import Withdraw from "./pages/protected/Withdraw"
-import BaseNavigation from "./pages/BaseNavigation"
 import { queryClient } from "./contexts/QueryContext/QueryContext"
 import { getUser, getPresetUsers, getBalance } from "./api/user/user"
 import ErrorPage from "./pages/ErrorPage"
@@ -23,25 +17,19 @@ import {
     balanceLoader,
     userLoader,
 } from "./contexts/QueryContext/user/loaders"
-import InstrumentsPage from "./pages/protected/Instruments"
-import Instrument from "./pages/protected/Instrument"
 import { instrumentsLoader } from "./contexts/QueryContext/instrument/loaders"
 import { getInstruments } from "./api/instrument/instruments"
 import { instrumentPricesLoader } from "./contexts/QueryContext/price/loaders"
 import { getPricesForInstrument } from "./api/price/price"
 import { transactionsLoader } from "./contexts/QueryContext/transaction/loaders"
 import { getTransactions } from "./api/transaction/transactions"
-import FeatureFlags from "./pages/FeatureFlags"
-import Version from "./pages/Version"
 import {
     creditCardStatusHistoryLoader,
     creditCardStatusLoader,
 } from "./contexts/QueryContext/creditCard/loaders"
 import { getOrderStatus, getOrderStatusHistory } from "./api/creditCard/order"
 import CreditCardLayout from "./layouts/CreditCardLayout"
-import CreditCardOrder from "./pages/protected/creditCard/CreditCardOrder"
-import CreditCardStatus from "./pages/protected/creditCard/CreditCardStatus"
-import CreditCardActive from "./pages/protected/creditCard/CreditCardActive"
+import { lazyRoute } from "./utils/lazyRoute"
 
 export enum LoaderIds {
     user = "user-loader",
@@ -54,17 +42,17 @@ export enum LoaderIds {
 
 const elementRoutes = createRoutesFromElements(
     <Route path="/" element={<ProviderLayout />} errorElement={<ErrorPage />}>
-        <Route index element={<BaseNavigation />} />
-        <Route path="*" element={<BaseNavigation />} />
-        <Route path="feature-flags" element={<FeatureFlags />} />
-        <Route path="version" element={<Version />} />
+        <Route index lazy={lazyRoute(() => import("./pages/BaseNavigation"))} />
+        <Route path="*" lazy={lazyRoute(() => import("./pages/BaseNavigation"))} />
+        <Route path="feature-flags" lazy={lazyRoute(() => import("./pages/FeatureFlags"))} />
+        <Route path="version" lazy={lazyRoute(() => import("./pages/Version"))} />
         <Route element={<PublicLayout />}>
             <Route
                 path="login"
-                element={<Login />}
+                lazy={lazyRoute(() => import("./pages/public/Login"))}
                 loader={presetUsersLoader(queryClient, getPresetUsers)}
             />
-            <Route path="signup" element={<Signup />} />
+            <Route path="signup" lazy={lazyRoute(() => import("./pages/public/Signup"))} />
         </Route>
         <Route
             element={<ProtectedLayout />}
@@ -73,17 +61,17 @@ const elementRoutes = createRoutesFromElements(
                     loadWithUser(
                         sessionUserProvider,
                         userLoader(queryClient, getUser)
-                    ),
+                    )(),
                     loadWithUser(
                         sessionUserProvider,
                         balanceLoader(queryClient, getBalance)
-                    ),
+                    )(),
                 ])
             }}
             id={LoaderIds.user}
         >
-            <Route path="withdraw" element={<Withdraw />} />
-            <Route path="deposit" element={<Deposit />} />
+            <Route path="withdraw" lazy={lazyRoute(() => import("./pages/protected/Withdraw"))} />
+            <Route path="deposit" lazy={lazyRoute(() => import("./pages/protected/Deposit"))} />
             <Route
                 path="credit-card"
                 element={<CreditCardLayout />}
@@ -93,10 +81,10 @@ const elementRoutes = createRoutesFromElements(
                 )}
                 id={LoaderIds.creditCard}
             >
-                <Route path="order" element={<CreditCardOrder />} />
+                <Route path="order" lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardOrder"))} />
                 <Route
                     path="status"
-                    element={<CreditCardStatus />}
+                    lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardStatus"))}
                     loader={loadWithUser(
                         sessionUserProvider,
                         creditCardStatusHistoryLoader(
@@ -106,7 +94,7 @@ const elementRoutes = createRoutesFromElements(
                     )}
                     id={LoaderIds.creditCardStatusHistory}
                 />
-                <Route path="active" element={<CreditCardActive />} />
+                <Route path="active" lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardActive"))} />
             </Route>
             <Route
                 loader={loadWithUser(
@@ -117,7 +105,7 @@ const elementRoutes = createRoutesFromElements(
             >
                 <Route
                     path="home"
-                    element={<Home />}
+                    lazy={lazyRoute(() => import("./pages/protected/Home"))}
                     loader={loadWithUser(
                         sessionUserProvider,
                         transactionsLoader(queryClient, getTransactions)
@@ -125,10 +113,10 @@ const elementRoutes = createRoutesFromElements(
                     id={LoaderIds.transactions}
                 />
                 <Route path="instruments">
-                    <Route index element={<InstrumentsPage />} />
+                    <Route index lazy={lazyRoute(() => import("./pages/protected/Instruments"))} />
                     <Route
                         path=":id"
-                        element={<Instrument />}
+                        lazy={lazyRoute(() => import("./pages/protected/Instrument"))}
                         loader={async ({ params }) => {
                             return await instrumentPricesLoader(
                                 queryClient,

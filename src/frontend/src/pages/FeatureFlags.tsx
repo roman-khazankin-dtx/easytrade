@@ -64,7 +64,7 @@ export default function FeatureFlags() {
                                     </Alert>
                                 )}
                             </Stack>
-                            <IconButton onClick={() => mutate()}>
+                            <IconButton aria-label="button" onClick={() => mutate()}>
                                 <ReplayIcon />
                             </IconButton>
                         </Stack>

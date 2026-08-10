@@ -168,7 +168,7 @@ export default function FeatureFlagItem({
                                     {curlCommand}
                                 </Typography>
                                 <Box>
-                                    <IconButton
+                                    <IconButton aria-label="button"
                                         onClick={() => {
                                             void navigator.clipboard.writeText(
                                                 curlCommand

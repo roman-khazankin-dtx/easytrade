@@ -1,5 +1,5 @@
 import React from "react"
-import { Logout } from "@mui/icons-material"
+import Logout from "@mui/icons-material/Logout"
 import {
     Avatar,
     IconButton,
@@ -13,7 +13,7 @@ import {
 import { useState } from "react"
 import { useAuth } from "../../contexts/AuthContext/context"
 import { useUserQuery } from "../../contexts/QueryContext/user/hooks"
-import { User } from "../../api/user/types"
+import { User, Balance } from "../../api/user/types"
 import { useRouteLoaderData } from "react-router"
 import { LoaderIds } from "../../router"
 import { logoutInvalidateQuery } from "../../contexts/QueryContext/user/queries"
@@ -47,8 +47,8 @@ export default function UserPanel() {
     const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null)
     const { userId, logoutHandler } = useAuth()
 
-    const initialData = useRouteLoaderData(LoaderIds.user) as [() => User] // Get initial data as array of 2 async functions
-    const initialUser = initialData ? initialData[0]() : undefined // If they exist, call the first on the retreive the user data
+    const loaderData = useRouteLoaderData<[User, Balance]>(LoaderIds.user)
+    const initialUser = loaderData?.[0]
 
     const data = userId ? useUserQuery(userId, initialUser).data : undefined
 
