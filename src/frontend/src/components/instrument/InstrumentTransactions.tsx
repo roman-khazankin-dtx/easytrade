@@ -1,12 +1,13 @@
-import React from "react"
+import React, { lazy } from "react"
 import { TabContext, TabList, TabPanel } from "@mui/lab"
 import { Box, Card, Tab } from "@mui/material"
 import Grid2 from "@mui/material/Grid2"
 import { ReactElement, useState } from "react"
-import QuickBuyForm from "./forms/QuickBuyForm"
-import QuickSellForm from "./forms/QuickSellForm"
-import BuyForm from "./forms/BuyForm"
-import SellForm from "./forms/SellForm"
+
+const QuickBuyForm = lazy(() => import("./forms/QuickBuyForm"))
+const QuickSellForm = lazy(() => import("./forms/QuickSellForm"))
+const BuyForm = lazy(() => import("./forms/BuyForm"))
+const SellForm = lazy(() => import("./forms/SellForm"))
 
 enum FormId {
     QuickBuy = "quick-buy",

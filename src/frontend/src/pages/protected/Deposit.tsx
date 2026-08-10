@@ -1,8 +1,9 @@
-import React from "react"
+import React, { lazy } from "react"
 import { Card, CardContent, Stack } from "@mui/material"
-import DepositForm from "../../components/forms/DepositForm"
 import DemoAppWarning from "../../components/DemoAppWarning"
 import { deposit } from "../../api/creditCard/deposit/deposit"
+
+const DepositForm = lazy(() => import("../../components/forms/DepositForm"))
 
 export default function Deposit() {
     return (

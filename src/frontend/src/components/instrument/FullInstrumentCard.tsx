@@ -1,5 +1,5 @@
-import React, { lazy, Suspense } from "react"
-import { Card, CardHeader, Skeleton } from "@mui/material"
+import React, { lazy } from "react"
+import { Card, CardHeader } from "@mui/material"
 import InstrumentHeader from "./InstrumentHeader"
 import { useInstrument } from "../../contexts/InstrumentContext/context"
 import { useRouteLoaderData } from "react-router"
@@ -28,9 +28,8 @@ export default function FullInstrumentCard() {
                     },
                 }}
             />
-            <Suspense fallback={<Skeleton variant="rectangular" height={200} />}>
                 <InstrumentPriceChart prices={data ?? []} />
-            </Suspense>
+            
         </Card>
     )
 }

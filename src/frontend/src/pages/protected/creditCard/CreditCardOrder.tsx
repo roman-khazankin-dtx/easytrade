@@ -1,7 +1,8 @@
-import React from "react"
+import React, { lazy } from "react"
 import { Card, CardContent, Stack } from "@mui/material"
-import CreditCardForm from "../../../components/creditCard/CreditCardForm"
 import DemoAppWarning from "../../../components/DemoAppWarning"
+
+const CreditCardForm = lazy(() => import("../../../components/creditCard/CreditCardForm"))
 
 export default function CreditCardOrder() {
     return (

@@ -1,4 +1,4 @@
-import React from "react"
+import React, { lazy } from "react"
 import {
     createBrowserRouter,
     createRoutesFromElements,
@@ -29,7 +29,6 @@ import {
 } from "./contexts/QueryContext/creditCard/loaders"
 import { getOrderStatus, getOrderStatusHistory } from "./api/creditCard/order"
 import CreditCardLayout from "./layouts/CreditCardLayout"
-import { lazyRoute } from "./utils/lazyRoute"
 
 export enum LoaderIds {
     user = "user-loader",
@@ -40,19 +39,33 @@ export enum LoaderIds {
     prices = "prices-loader",
 }
 
+const BaseNavigation = lazy(() => import("./pages/BaseNavigation"))
+const FeatureFlags = lazy(() => import("./pages/FeatureFlags"))
+const Version = lazy(() => import("./pages/Version"))
+const Login = lazy(() => import("./pages/public/Login"))
+const Signup = lazy(() => import("./pages/public/Signup"))
+const Withdraw = lazy(() => import("./pages/protected/Withdraw"))
+const Deposit = lazy(() => import("./pages/protected/Deposit"))
+const CreditCardOrder = lazy(() => import("./pages/protected/creditCard/CreditCardOrder"))
+const CreditCardStatus = lazy(() => import("./pages/protected/creditCard/CreditCardStatus"))
+const CreditCardActive = lazy(() => import("./pages/protected/creditCard/CreditCardActive"))
+const Home = lazy(() => import("./pages/protected/Home"))
+const Instruments = lazy(() => import("./pages/protected/Instruments"))
+const Instrument = lazy(() => import("./pages/protected/Instrument"))
+
 const elementRoutes = createRoutesFromElements(
     <Route path="/" element={<ProviderLayout />} errorElement={<ErrorPage />}>
-        <Route index lazy={lazyRoute(() => import("./pages/BaseNavigation"))} />
-        <Route path="*" lazy={lazyRoute(() => import("./pages/BaseNavigation"))} />
-        <Route path="feature-flags" lazy={lazyRoute(() => import("./pages/FeatureFlags"))} />
-        <Route path="version" lazy={lazyRoute(() => import("./pages/Version"))} />
+        <Route index element={<BaseNavigation />} />
+        <Route path="*" element={<BaseNavigation />} />
+        <Route path="feature-flags" element={<FeatureFlags />} />
+        <Route path="version" element={<Version />} />
         <Route element={<PublicLayout />}>
             <Route
                 path="login"
-                lazy={lazyRoute(() => import("./pages/public/Login"))}
+                element={<Login />}
                 loader={presetUsersLoader(queryClient, getPresetUsers)}
             />
-            <Route path="signup" lazy={lazyRoute(() => import("./pages/public/Signup"))} />
+            <Route path="signup" element={<Signup />} />
         </Route>
         <Route
             element={<ProtectedLayout />}
@@ -70,8 +83,8 @@ const elementRoutes = createRoutesFromElements(
             }}
             id={LoaderIds.user}
         >
-            <Route path="withdraw" lazy={lazyRoute(() => import("./pages/protected/Withdraw"))} />
-            <Route path="deposit" lazy={lazyRoute(() => import("./pages/protected/Deposit"))} />
+            <Route path="withdraw" element={<Withdraw />} />
+            <Route path="deposit" element={<Deposit />} />
             <Route
                 path="credit-card"
                 element={<CreditCardLayout />}
@@ -81,10 +94,10 @@ const elementRoutes = createRoutesFromElements(
                 )}
                 id={LoaderIds.creditCard}
             >
-                <Route path="order" lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardOrder"))} />
+                <Route path="order" element={<CreditCardOrder />} />
                 <Route
                     path="status"
-                    lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardStatus"))}
+                    element={<CreditCardStatus />}
                     loader={loadWithUser(
                         sessionUserProvider,
                         creditCardStatusHistoryLoader(
@@ -94,7 +107,7 @@ const elementRoutes = createRoutesFromElements(
                     )}
                     id={LoaderIds.creditCardStatusHistory}
                 />
-                <Route path="active" lazy={lazyRoute(() => import("./pages/protected/creditCard/CreditCardActive"))} />
+                <Route path="active" element={<CreditCardActive />} />
             </Route>
             <Route
                 loader={loadWithUser(
@@ -105,7 +118,7 @@ const elementRoutes = createRoutesFromElements(
             >
                 <Route
                     path="home"
-                    lazy={lazyRoute(() => import("./pages/protected/Home"))}
+                    element={<Home />}
                     loader={loadWithUser(
                         sessionUserProvider,
                         transactionsLoader(queryClient, getTransactions)
@@ -113,10 +126,10 @@ const elementRoutes = createRoutesFromElements(
                     id={LoaderIds.transactions}
                 />
                 <Route path="instruments">
-                    <Route index lazy={lazyRoute(() => import("./pages/protected/Instruments"))} />
+                    <Route index element={<Instruments />} />
                     <Route
                         path=":id"
-                        lazy={lazyRoute(() => import("./pages/protected/Instrument"))}
+                        element={<Instrument />}
                         loader={async ({ params }) => {
                             return await instrumentPricesLoader(
                                 queryClient,

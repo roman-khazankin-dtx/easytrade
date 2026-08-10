@@ -1,9 +1,10 @@
-import React from "react"
+import React, { lazy } from "react"
 import { Card, CardContent, Link, Stack } from "@mui/material"
 import { Link as RouterLink } from "react-router"
 import { signup } from "../../api/signup/signup"
-import SignupForm from "../../components/forms/SignupForm"
 import DemoAppWarning from "../../components/DemoAppWarning"
+
+const SignupForm = lazy(() => import("../../components/forms/SignupForm"))
 
 export default function Signup() {
     return (

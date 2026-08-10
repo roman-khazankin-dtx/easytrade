@@ -1,11 +1,12 @@
-import React from "react"
+import React, { lazy } from "react"
 import { Card, Divider, Link, Stack, CardContent } from "@mui/material"
 import { Link as RouterLink, useLoaderData } from "react-router"
 import { PresetUser } from "../../api/user/types"
-import DefaultLoginForm from "../../components/forms/DefaultLoginForm"
-import LoginForm from "../../components/forms/LoginForm"
 import { useAuth } from "../../contexts/AuthContext/context"
 import { usePresetUsersQuery } from "../../contexts/QueryContext/user/hooks"
+
+const DefaultLoginForm = lazy(() => import("../../components/forms/DefaultLoginForm"))
+const LoginForm = lazy(() => import("../../components/forms/LoginForm"))
 
 export default function Login() {
     const { loginHandler, defaultLoginHandler } = useAuth()

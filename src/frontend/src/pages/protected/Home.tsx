@@ -1,5 +1,5 @@
-import React, { lazy, Suspense } from "react"
-import { Container, Skeleton, Stack } from "@mui/material"
+import React, { lazy } from "react"
+import { Container, Stack } from "@mui/material"
 import AccountInfo from "../../components/AccountInfo"
 import { useTransactionQuery } from "../../contexts/QueryContext/transaction/hooks"
 import { useInstrumentsQuery } from "../../contexts/QueryContext/instrument/hooks"
@@ -20,8 +20,6 @@ const TransactionsCharts = lazy(
 const InstrumentsTable = lazy(() => import("../../components/InstrumentsTable"))
 const TransactionsTable = lazy(() => import("../../components/TransactionsTable"))
 
-const chartFallback = <Skeleton variant="rectangular" height={300} />
-const tableFallback = <Skeleton variant="rectangular" height={400} />
 
 export default function Home() {
     const { userId } = useAuthUser()
@@ -37,23 +35,15 @@ export default function Home() {
         <Container>
             <Stack spacing={2}>
                 <AccountInfo />
-                <Suspense fallback={chartFallback}>
-                    <InstrumentsChart instruments={instruments} />
-                </Suspense>
-                <Suspense fallback={tableFallback}>
-                    <InstrumentsTable instruments={instruments} />
-                </Suspense>
-                <Suspense fallback={chartFallback}>
-                    <TransactionsCharts
-                        transactions={transactionsData.data ?? []}
-                    />
-                </Suspense>
-                <Suspense fallback={tableFallback}>
-                    <TransactionsTable
-                        transactions={transactionsData.data ?? []}
-                        instruments={instruments}
-                    />
-                </Suspense>
+                <InstrumentsChart instruments={instruments} />
+                <InstrumentsTable instruments={instruments} />
+                <TransactionsCharts
+                    transactions={transactionsData.data ?? []}
+                />
+                <TransactionsTable
+                    transactions={transactionsData.data ?? []}
+                    instruments={instruments}
+                />
             </Stack>
         </Container>
     )
