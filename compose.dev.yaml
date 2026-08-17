@@ -162,14 +162,21 @@ services:
 
   accountservice:
     <<: *default-service
-    build: src/accountservice
+    build:
+      context: src/accountservice
+      args:
+        - TENANT_ID=${DT_TENANT_ID:-unspecified}
+        - TENANT_PAAS_TOKEN=${DT_PAAS_TOKEN:-unspecified}
     depends_on:
       - manager
+      - feature-flag-service
     ports:
       - 8089:8080
     environment:
       MANAGER_HOSTANDPORT: manager:8080
       PROXY_PREFIX: accountservice
+      <<: *feature-flag-service-env
+      JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer"
 
   engine:
     <<: *default-service

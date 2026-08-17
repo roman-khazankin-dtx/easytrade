@@ -26,6 +26,8 @@ public class FeatureFlagConfig {
         private String enableHighCpuUsage;
         @Value("${app.flags.enableCreditCardValidation}")
         private String enableCreditCardValidation;
+        @Value("${app.flags.enableMemoryLeak}")
+        private String enableMemoryLeak;
 
         @Bean
         public Map<String, Flag> flagRegistry() {
@@ -68,6 +70,12 @@ public class FeatureFlagConfig {
                                                 Boolean.parseBoolean(enableCreditCardValidation),
                                                 "Credit card validation",
                                                 "When enabled, credit card numbers are validated via the mainframe before deposit/withdraw operations are processed. Requires MAINFRAME_SERVICE_URL to be configured in broker-service.",
+                                                isModifiable, "problem_pattern"),
+                                "memory_leak",
+                                new Flag("memory_leak",
+                                                Boolean.parseBoolean(enableMemoryLeak),
+                                                "Memory leak",
+                                                "When enabled, account-service retains a fixed-size buffer per account lookup, growing heap monotonically until the flag is disabled.",
                                                 isModifiable, "problem_pattern"));
                 return Stream
                                 .of(configFlags, problemPatterns)
