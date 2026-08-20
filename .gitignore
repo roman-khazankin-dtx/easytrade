@@ -1,2 +1,5 @@
 .vscode/*
 !.vscode/mcp.json
+
+# local secrets / env (use .env.example as template)
+.env
