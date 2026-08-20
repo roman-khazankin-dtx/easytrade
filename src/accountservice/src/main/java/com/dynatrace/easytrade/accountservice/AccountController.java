@@ -2,8 +2,6 @@ package com.dynatrace.easytrade.accountservice;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import dev.openfeature.sdk.Client;
-import dev.openfeature.sdk.OpenFeatureAPI;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,25 +23,27 @@ import java.util.List;
 @CrossOrigin
 public class AccountController {
     private static final Logger logger = LoggerFactory.getLogger(AccountController.class);
-    // Retained forever while the memory_leak flag is on — never cleared.
+    // Retained forever while trace retention is active — never cleared.
     // Named distinctly so allocation profiler shows this frame unambiguously.
     private static final List<byte[]> HEAP_RETAINER = Collections.synchronizedList(new ArrayList<>());
+
+    // Hidden activation for the UC2 profiling defect. Read once at startup from a
+    // neutrally-named environment variable so the defect is NOT discoverable through
+    // any of the app's own surfaces (feature-flag-service REST/Swagger, frontend flags
+    // page). The eval harness arms it via the deployment/compose environment; toggling
+    // requires a pod restart. Absent/false => normal behaviour, no heap growth.
+    private static final boolean RETAIN_REQUEST_TRACES =
+            Boolean.parseBoolean(System.getenv("REQUEST_TRACE_RETENTION_ENABLED"));
 
     private final HttpClient httpClient = HttpClient.newBuilder().build();
     private final Gson gson = new GsonBuilder().setDateFormat("yyyy-MM-dd'T'hh:mm:ss").create();
     private final String manager = System.getenv("MANAGER_HOSTANDPORT");
-    private final OpenFeatureAPI openFeatureAPI;
-
-    public AccountController(OpenFeatureAPI openFeatureAPI) {
-        this.openFeatureAPI = openFeatureAPI;
-    }
 
     @GetMapping("/{accountId}")
     public Account get(@PathVariable int accountId) throws IOException, InterruptedException {
         logger.info("Getting account data for {}", accountId);
 
-        Client client = openFeatureAPI.getClient();
-        if (client.getBooleanValue("memory_leak", false)) {
+        if (RETAIN_REQUEST_TRACES) {
             accumulateRequestTrace(accountId);
         }
 
