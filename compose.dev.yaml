@@ -162,11 +162,7 @@ services:
 
   accountservice:
     <<: *default-service
-    build:
-      context: src/accountservice
-      args:
-        - TENANT_ID=${DT_TENANT_ID:-unspecified}
-        - TENANT_PAAS_TOKEN=${DT_PAAS_TOKEN:-unspecified}
+    build: src/accountservice
     depends_on:
       - manager
       - feature-flag-service
