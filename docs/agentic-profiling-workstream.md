@@ -1,6 +1,11 @@
 # Agentic Profiling Workstream (DRAFT)
 
-> Status: **draft for discussion** · Owner: Roman Khazankin · Last updated: 2026-08-20
+> Status: **draft for discussion** · Owner: Roman Khazankin · Last updated: 2026-08-21
+
+> **Repo / contribution note:** this workstream lives on the **fork**
+> (github.com/roman-khazankin-dtx/easytrade). We will **not** open pull requests to `origin` (the
+> upstream Dynatrace EasyTrade). The profiling defects are a private eval fixture and are not meant
+> to be upstreamed into the public demo app — commit and push to fork branches only. See §6 Q5.
 
 ## 1. Motivation & Goal
 
@@ -357,9 +362,9 @@ decision driven by which service gives the cleanest signal under load.
    rubric? Who owns the answer key?
 4. **One app instance or per-scenario instances?** Isolated instances give cleaner signal;
    one shared instance is cheaper but noisier.
-5. **Do we upstream these patterns** into the public EasyTrade, or keep a profiling-specific fork?
-   (Concealed env-var defects don't belong in the public demo; this pushes toward a fork or a
-   build-flag-gated variant.)
+5. ~~**Do we upstream these patterns** into the public EasyTrade?~~ **Resolved: no.** We keep a
+   profiling-specific **fork** and do **not** open PRs to `origin` — concealed eval defects don't
+   belong in the public demo app (see the repo/contribution note at the top).
 6. ~~**UC2 target service**~~ **Resolved:** UC2 is implemented in `accountservice` with concealed
    env-var activation (§2.1, §5). The old flag-client-plumbing trade-off no longer applies.
 7. **Is env-var concealment strong enough** for the eval's threat model, or do we need to prevent
@@ -428,5 +433,4 @@ memory-growth signal; env-var activation meant no flag client or loadgen changes
    disambiguation value: build the always-on wait/CPU defects first (UC3, UC7, UC11), then the
    leak/churn pairs (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9). Give the
    probabilistic defects a knob so we can dial signal difficulty.
-5. Decide upstream-vs-fork for the public EasyTrade (§6 Q5) — concealed defects argue for a fork
-   or a build-gated variant.
+5. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.
