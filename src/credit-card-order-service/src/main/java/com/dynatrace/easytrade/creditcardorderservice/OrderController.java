@@ -24,6 +24,7 @@ import com.dynatrace.easytrade.creditcardorderservice.models.CreditCardOrderStat
 import com.dynatrace.easytrade.creditcardorderservice.models.CreditCardOrderStatusHistory;
 import com.dynatrace.easytrade.creditcardorderservice.models.CreditCardRequest;
 import com.dynatrace.easytrade.creditcardorderservice.models.ErrorRequest;
+import com.dynatrace.easytrade.creditcardorderservice.models.OrdersOverview;
 import com.dynatrace.easytrade.creditcardorderservice.models.ShippingAddressResponse;
 import com.dynatrace.easytrade.creditcardorderservice.models.ShippingIdRequest;
 import com.dynatrace.easytrade.creditcardorderservice.models.StandardResponse;
@@ -63,10 +64,13 @@ public class OrderController {
     public static final String ORDER_ALREADY_EXISTS = "A credit card order for given accountId already exists!";
     private final DatabaseHelper dbHelper;
     private final OpenFeatureAPI openFeatureAPI;
+    private final OrderOverviewService overviewService;
 
-    public OrderController(DatabaseHelper dbHelper, OpenFeatureAPI openFeatureAPI) {
+    public OrderController(DatabaseHelper dbHelper, OpenFeatureAPI openFeatureAPI,
+            OrderOverviewService overviewService) {
         this.dbHelper = dbHelper;
         this.openFeatureAPI = openFeatureAPI;
+        this.overviewService = overviewService;
     }
 
     @PostMapping(value="", consumes={"application/json", "application/xml"})
@@ -80,6 +84,8 @@ public class OrderController {
             if (orderCount == 0) {
                 String guid = dbHelper.insertNewOrder(conn, request);
                 dbHelper.insertNewStatus(conn, guid, StatusType.ORDER_CREATED);
+                // Keep the cached overview fresh after a status write.
+                overviewService.invalidate();
 
                 return buildResponseEntity(HttpStatus.CREATED, ORDER_CREATED,
                         new CreditCardOrderResponse(guid), null, null);
@@ -117,6 +123,13 @@ public class OrderController {
                         "Status history for account [" + accountId + "] not found");
             }
             List<CreditCardOrderStatus> statusList = dbHelper.getOrderStatusList(conn, orderId.get());
+
+            // Enrich the log with a system-wide view of all orders. The overview is cached,
+            // so this is normally free — see OrderOverviewService.
+            OrdersOverview overview = overviewService.getOverview();
+            logger.info("Serving status history for account {}; system has {} orders, {} delivered",
+                    accountId, overview.totalOrders(), overview.completedOrders());
+
             return buildResponseEntity(HttpStatus.OK, "Status history found",
                     new CreditCardOrderStatusHistory(orderId.get(), statusList));
         } catch (SQLException e) {
@@ -270,6 +283,9 @@ public class OrderController {
                 String msg = String.format(UNKNOWN_STATUS_CHANGE, oldStatusType.getType(), newStatusType.getType());
                 return buildResponseEntity(HttpStatus.BAD_REQUEST, msg, null, null, null);
         }
+
+        // Keep the cached overview fresh after a status write.
+        overviewService.invalidate();
 
         return buildResponseEntity(HttpStatus.OK, STATUS_UPDATED,
                 null, null, null);

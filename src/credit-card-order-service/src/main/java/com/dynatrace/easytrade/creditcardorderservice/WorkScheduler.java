@@ -19,12 +19,14 @@ import java.util.List;
 public class WorkScheduler extends BaseScheduler {
     private static final Logger logger = LoggerFactory.getLogger(WorkScheduler.class);
     private final DatabaseHelper dbHelper;
+    private final OrderOverviewService overviewService;
     private final String creditCardOrderService = System.getenv("THIRD_PARTY_SERVICE_HOSTANDPORT");
     private final HttpClient httpClient = HttpClient.newBuilder().build();
 
-    public WorkScheduler(DatabaseHelper dbHelper) {
+    public WorkScheduler(DatabaseHelper dbHelper, OrderOverviewService overviewService) {
         super("work", Integer.parseInt(System.getenv("WORK_DELAY")), Integer.parseInt(System.getenv("WORK_RATE")));
         this.dbHelper = dbHelper;
+        this.overviewService = overviewService;
     }
 
     @Override
@@ -52,6 +54,8 @@ public class WorkScheduler extends BaseScheduler {
                 if (standardResponse.statusCode() == HttpStatus.OK.value()) {
                     logger.info("Ordered the manufacture of card with orderId: {}", orderId);
                     dbHelper.insertNewStatus(orderId, StatusType.CARD_ORDERED);
+                    // Keep the cached overview fresh after a status write.
+                    overviewService.invalidate();
                 } else {
                     logger.info("Failed to order card manufacture. Status code received is {}, and the message is: {}",
                             standardResponse.statusCode(), standardResponse.message());

@@ -93,6 +93,20 @@ backtracking, unbounded serialization, crypto in a hot path).
 - **Signal:** on-CPU sampling; a dominant frame in the flamegraph.
 - **Agent task:** identify the offending service + method/stack, quantify its CPU share, and
   propose the fix. Ground truth = the injected hot method.
+- **Two realizations (see §5):**
+  - *(.NET, planned)* `broker-service` — a second env-gated hot path beside the existing
+    `HighCpuUsage` Collatz busy-loop. Keeps one non-JVM host in the mix.
+  - *(Java, ✅ implemented)* `credit-card-order-service` — a **cache-defeat** variant that is
+    deliberately harder than a bare busy-loop. An expensive `O(n²)` "orders overview"
+    (`OrdersOverview#build`) is meant to be served from a cache, but the cache is invalidated on
+    **every** status write (`OrderController`, `WorkScheduler`), so it is never warm and the
+    rebuild runs on the request hot path. The agent must reason **two hops**: the CPU frame is
+    real, but the root cause is not "optimize the loop" — it is "why does a cached result recompute
+    every request?" (over-eager invalidation). Chosen over an N+1/chatty-DB shape on purpose: DB
+    round-trips are already captured as **spans**, so a chatty-DB defect is diagnosable from tracing
+    + database metrics **without a profiler**, whereas an in-process CPU hotspot shows up as a
+    slow request with **no extra spans** and is only localizable from a CPU flamegraph — the signal
+    this eval is meant to exercise. See §7.1.
 
 ### UC2 — Memory allocation hotspot / leak
 Sustained, unbounded growth (e.g. an ever-growing cache/list) or high allocation churn from a
@@ -137,20 +151,6 @@ The other ~95% are served from cache and are fast. Averages look healthy; only t
   UC3: the signal is diluted by the fast majority, so the agent must reason about distributions and
   intermittency, not a single dominant frame. A **miss-rate knob** (intensity) lets us tune how
   hard the signal is to find.
-
-### UC7 — N+1 / chatty database access (off-CPU DB wait by call *count*)
-The service is slow because it issues **many small queries** instead of one set-based query — the
-classic N+1: fetch a list, then loop and run one query per row. Each query is fast; the aggregate
-wait comes from the *number* of round-trips.
-- **Signal:** off-CPU / DB-wait time dominated by a **high count** of short JDBC calls (not one long
-  call); database service shows a spike in query volume with low per-query duration; the calling
-  stack repeats the same statement in a loop.
-- **Agent task:** recognize "death by a thousand queries" — attribute latency to call *frequency*
-  rather than a single slow statement, locate the loop issuing per-row queries, and distinguish it
-  from UC6 (one conditional slow call) and UC3 (a lock). Ground truth = the per-row query loop.
-- **Grounded in:** `credit-card-order-service` `DatabaseHelper` already exposes both a set query
-  (`getOrderStatusList`) and per-row queries (`getLastOrderStatus`, `getOrderCountForAccountId`);
-  the env-gated defect replaces the set fetch with a per-row loop on `GET /v1/orders/{id}/status`.
 
 ### UC8 — Logging overhead on the hot path (on-CPU log frames + appender I/O)
 CPU and latency are burned not on business logic but on **logging** — expensive message
@@ -214,19 +214,28 @@ computing.
 > let the agent compare before/after profiles to localize the regressed frame. This is arguably
 > the highest-value agentic use-case but depends on us running two builds; kept as a stretch goal.
 
-**Coverage rationale:** the eleven use-cases span the three profiling pillars and the "traps" where
+> **Removed: UC7 (N+1 / chatty DB).** Originally listed as an off-CPU DB-wait scenario, it was
+> dropped because it is a **poor profiling use-case**: every DB round-trip is captured as a
+> distributed-tracing span, so an N+1 is diagnosable directly from a trace waterfall and
+> database-service metrics (query count spikes, per-query duration flat) **without ever opening a
+> profiler**. The credit-card-order-service host we had earmarked for it now hosts the Java UC1
+> **cache-defeat CPU hotspot** instead (§3 UC1, §5, §7.1), which produces an in-process CPU signal
+> that *only* a profiler can localize. UC7's id is retired; UC8–UC11 keep their numbers.
+
+**Coverage rationale:** the use-cases span the three profiling pillars and the "traps" where
 symptoms look alike in metrics but differ in the profile:
-- *on-CPU:* UC1 (business hotspot), UC5 (GC symptom), UC8 (logging), UC9 (serialization),
-  UC11 (spin that only *looks* on-CPU).
+- *on-CPU:* UC1 (business hotspot; incl. the cache-defeat variant), UC5 (GC symptom), UC8
+  (logging), UC9 (serialization), UC11 (spin that only *looks* on-CPU).
 - *allocation:* UC2 (retained leak), UC5 (churn), UC9 (marshalling allocation).
 - *off-CPU / wait:* UC3 (lock), UC4 (pool queue), UC6 (conditional cache miss),
-  UC7 (many small DB calls), UC10 (parked leaked threads).
+  UC10 (parked leaked threads).
 
 The set is built around **disambiguation pairs** that force the agent to reason, not pattern-match:
 UC2↔UC5 (leak vs. churn), UC4↔UC10 (pool saturation vs. thread leak), UC1↔UC11 (real compute vs.
-spin-wait), UC3↔UC6↔UC7 (steady lock vs. intermittent tail vs. call-count wait), and
-UC1↔UC8↔UC9 (business CPU vs. logging vs. serialization). UC6 additionally adds a
-**probabilistic/tail-latency** dimension the always-on defects lack.
+spin-wait), UC3↔UC6 (steady lock vs. intermittent tail), and
+UC1↔UC8↔UC9 (business CPU vs. logging vs. serialization). The Java UC1 adds a further twist —
+a *real* CPU hotspot whose true root cause is a **defeated cache**, not the hot loop itself. UC6
+additionally adds a **probabilistic/tail-latency** dimension the always-on defects lack.
 
 ## 4. Is EasyTrade a good candidate to extend?
 
@@ -322,13 +331,13 @@ decision driven by which service gives the cleanest signal under load.
 
 | Use-case | Runtime | Host | Status | Injection idea |
 |---|---|---|---|---|
-| UC1 CPU hotspot | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second env-gated hot path (regex backtracking / expensive serialization) beside the Collatz loop |
+| UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second env-gated hot path (regex backtracking / expensive serialization) beside the Collatz loop |
+| UC1 CPU hotspot (Java, cache-defeat) | Java | `credit-card-order-service` | ✅ implemented | Expensive `O(n²)` `OrdersOverview#build` meant to be cached, but invalidated on every status write (`OrderController`, `WorkScheduler`) → never warm → rebuild runs on every `GET /v1/orders/{id}/status`. **Always-on (no env gate)** — see §7.1 |
 | UC2 Memory leak | Java | `accountservice` | ✅ implemented | `REQUEST_TRACE_RETENTION_ENABLED`-gated `static` collection that grows per `GET /account/{id}` and is never freed |
 | UC3 Lock contention | Java | TBD | planned | env-gated coarse `synchronized`/`ReentrantLock` around a hot section → threads block, CPU idle |
 | UC4 Thread-pool exhaustion | Java | TBD | planned | env-gated bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
 | UC5 GC / alloc churn | Java | TBD | planned | env-gated high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
 | UC6 Conditional cache-miss wait | Java | TBD | planned | env-gated cache with a tunable miss rate (~5%); missed requests fall back to a slow downstream/DB load → intermittent off-CPU/net-IO wait on the tail |
-| UC7 N+1 / chatty DB | Java | `credit-card-order-service` (candidate) | planned | env-gated per-row query loop replacing `getOrderStatusList` on `GET /v1/orders/{id}/status` → many short JDBC calls |
 | UC8 Logging overhead | Java | `accountservice`/`engine` (candidate) | planned | env-gated per-request INFO log that serializes a large object (`Gson#toJson`) and/or a synchronous appender → CPU in log frames + I/O |
 | UC9 Serialization overhead | Java | `accountservice` (candidate) | planned | env-gated repeated (de)serialization of the payload (parse→transform→re-serialize / pretty-print) on `GET /account/{id}` → serializer CPU + alloc |
 | UC10 Thread leak | Java | `contentcreator` (candidate) | planned | env-gated per-request `new Thread` that parks forever (never joined) → unbounded thread count + native-memory growth, heap flat |
@@ -338,7 +347,7 @@ decision driven by which service gives the cleanest signal under load.
 - **JVM focus (UC2–UC11):** the JVM exposes rich, distinct profiling signals for every pillar
   (allocation, monitor-wait, thread-state, GC, off-CPU/net-IO, JDBC wait, spin), so a Java-heavy set
   exercises the profiling product thoroughly on one runtime.
-- **UC7–UC11 are grounded in existing code** (see the "Grounded in" notes in §3): real JDBC helpers,
+- **UC8–UC11 are grounded in existing code** (see the "Grounded in" notes in §3): real
   per-request logging, `Gson` usage, `new Thread` spawning, and blocking downstream calls already
   exist, so each defect is a small, believable mutation of a real path rather than a synthetic add-on.
 - **Host = TBD, on purpose:** concealed env-var activation removes the per-service plumbing cost,
@@ -350,8 +359,12 @@ decision driven by which service gives the cleanest signal under load.
   load-dependent defects unless we bump their `loadgen` frequency.
 - **UC2 landed in `accountservice`** (a busy Java service under continuous load) for a strong
   memory-growth signal — the reference implementation for the concealed-activation pattern.
-- **UC1 stays .NET** on `broker-service`, which already has a profiler-visible template
-  (`HighCpuUsage`); it keeps at least one non-JVM host in the mix.
+- **UC1 now has two hosts.** The .NET `broker-service` variant (planned) reuses the existing
+  profiler-visible `HighCpuUsage` template and keeps one non-JVM host in the mix. The Java
+  `credit-card-order-service` variant (✅ implemented, §7.1) is the **cache-defeat CPU hotspot** that
+  replaced the earlier UC7 idea on this host — it makes the CPU-hotspot task harder (real hot frame,
+  but the root cause is a defeated cache) and gives an in-process signal that, unlike a chatty-DB
+  N+1, cannot be diagnosed from traces alone.
 
 ## 6. Open questions
 
@@ -360,8 +373,11 @@ decision driven by which service gives the cleanest signal under load.
    arm-defect → wait → query-tenant → grade loop from scratch?
 3. **Ground-truth grading** — score on "named the right service", "named the right method", or a
    rubric? Who owns the answer key?
-4. **One app instance or per-scenario instances?** Isolated instances give cleaner signal;
-   one shared instance is cheaper but noisier.
+4. ~~**One app instance or per-scenario instances?**~~ **Resolved: per-scenario, non-overlapping.**
+   Each UC runs on its own isolated deployment so scenarios never contaminate each other's profiles.
+   This is what lets defects stay **flag-free / always-on** (no arm/disarm lifecycle needed on a
+   shared instance) — see the §7.1 note. Revisit only if we ever need several UCs live at once on one
+   instance.
 5. ~~**Do we upstream these patterns** into the public EasyTrade?~~ **Resolved: no.** We keep a
    profiling-specific **fork** and do **not** open PRs to `origin` — concealed eval defects don't
    belong in the public demo app (see the repo/contribution note at the top).
@@ -422,15 +438,86 @@ memory-growth signal; env-var activation meant no flag client or loadgen changes
     classification: leak (not churn)
 ```
 
+## 7.1 UC1 (Java) — cache-defeat CPU hotspot, end-to-end (implemented)
+
+Second defect built end-to-end, on `credit-card-order-service`. This is the Java realization of
+UC1 (§3) and the replacement for the retired UC7 idea on this host.
+
+**The scenario.** A system-wide "orders overview" (`OrdersOverview#build`) cross-references every
+order against every status row — a naive `O(orders × statuses)` scan. It is loaded with **two
+bounded set queries** (`getAllOrders`, `getAllOrderStatuses`) — deliberately **not** an N+1 — so the
+cost is **in-process CPU**, not DB round-trips. It is cached in `OrderOverviewService` and is meant
+to be rebuilt rarely.
+
+**The bug (root cause).** The cache is invalidated on **every** status write — in
+`OrderController` (order create, status update) and, critically, in `WorkScheduler`, which advances
+orders on every tick. Because writes are continuous, the cache is essentially never warm, so the
+expensive rebuild runs on the request hot path: every `GET /v1/orders/{accountId}/status` consults
+the overview and pays the full `O(n²)` cost.
+
+**Why this is a *profiling* defect (vs. UC7 / chatty DB).** The recompute does only two DB queries,
+so a trace waterfall shows a slow request with **no extra spans** and DB metrics stay flat; the time
+is burned inside `OrdersOverview#build`. The only way to localize it is the **CPU flamegraph**. A
+chatty-DB N+1, by contrast, would be obvious from tracing + database-service metrics without a
+profiler — which is exactly why UC7 was dropped.
+
+**Two-hop agent task.** (1) Find the dominant CPU frame (`OrdersOverview#build`). (2) Realize the
+correct fix is *not* "optimize the loop" but "stop recomputing a cacheable result every request" —
+the over-eager `OrderOverviewService#invalidate()` on every write. This disambiguates a genuine
+hotspot-to-optimize (bare UC1) from a hotspot that should not be running at all.
+
+> **Flag-free by design (and why that's fine here).** This defect ships as **default behaviour**
+> with no activation env var — there is nothing to "arm," which also means there is nothing about it
+> to *discover* through the app's surfaces (the concealment goal of §2.1 is met trivially). The one
+> property we give up — a clean, un-armed baseline from the *same* image — does not matter under our
+> operating model: **scenarios do not overlap.** Each UC runs on its own isolated deployment (one
+> scenario per instance, §6 Q4), so this service's always-on CPU hotspot never contaminates another
+> scenario's profiles, and grading the agent needs only the live app + the answer key below, not an
+> A/B against a baseline. If we ever move to a **shared instance hosting several UCs at once**, this
+> defect would need an env gate to be isolatable — but that is explicitly out of scope; we keep it
+> simple and flag-free.
+
+**Ground-truth catalog entry:**
+```yaml
+- id: UC1-java-cache-defeat-cpu-hotspot
+  activation:
+    mechanism: none               # always-on default behaviour (see §2.1 deviation above)
+    var: null
+    armed_when: always
+    toggle: n/a (baked into the service)
+  service: credit-card-order-service
+  runtime: java
+  root_cause:
+    file: src/credit-card-order-service/src/main/java/com/dynatrace/easytrade/creditcardorderservice/OrderOverviewService.java
+    symbol: OrdersOverview#build          # the O(n^2) CPU hotspot frame
+    true_cause: OrderOverviewService#invalidate over-called on every status write (OrderController, WorkScheduler)
+    trigger: GET /v1/orders/{accountId}/status
+    mechanism: cacheable O(orders*statuses) overview recomputed every request because the cache is never warm
+  expected_signal:
+    profiling: on-CPU hotspot at OrdersOverview#build; frame share grows as the DB accumulates orders
+    tracing: slow request with NO extra DB spans (only 2 set queries); distinguishes this from an N+1
+    metric: service CPU up while DB per-query duration / call count stay flat
+  expected_dql: <query>
+  agent_answer_key:
+    service: credit-card-order-service
+    method: OrdersOverview#build
+    classification: CPU hotspot whose root cause is a defeated cache (over-eager invalidation), not the loop itself
+```
+
 ## 8. Next steps (post-prototype)
 
 1. ✅ UC2 built end-to-end in `accountservice` with concealed activation (§7).
-2. Confirm the tenant has continuous profiling enabled; wire the arm→restart→wait→query→grade
+2. ✅ UC1 (Java) cache-defeat CPU hotspot built end-to-end in `credit-card-order-service` (§7.1);
+   **always-on**, no env gate yet — see the §2.1 deviation note.
+3. Confirm the tenant has continuous profiling enabled; wire the arm→restart→wait→query→grade
    harness (arming = env-var patch + pod restart, per §2.1).
-3. Standardize the ground-truth catalog; backfill for UC1 (already implemented) — and migrate UC1
-   off its `high_cpu_usage` flag to concealed activation so it isn't self-disclosing either.
-4. Roll out UC3–UC11 on **Java services** (§5), each with concealed env-var activation. Sequence by
-   disambiguation value: build the always-on wait/CPU defects first (UC3, UC7, UC11), then the
-   leak/churn pairs (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9). Give the
-   probabilistic defects a knob so we can dial signal difficulty.
-5. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.
+4. Standardize the ground-truth catalog; backfill for the .NET UC1 (existing `HighCpuUsage`) — and
+   migrate it off its `high_cpu_usage` flag so it isn't self-disclosing either. The Java UC1 (§7.1)
+   stays **flag-free/always-on** — no env gate — per the per-scenario isolation decision (§6 Q4).
+5. Roll out UC3–UC6, UC8–UC11 on **Java services** (§5). With scenarios running on isolated,
+   non-overlapping instances (§6 Q4), defects can ship **flag-free/always-on** like the Java UC1;
+   reach for a concealed env gate only where a UC genuinely needs an arm/disarm lifecycle (e.g. the
+   UC2 leak, where disarm-and-plateau is part of the ground truth, or an intensity knob). Sequence by
+   disambiguation value: always-on wait/CPU defects first (UC3, UC11), then the leak/churn pairs
+   (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9).
+6. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.

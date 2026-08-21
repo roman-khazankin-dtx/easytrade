@@ -3,6 +3,7 @@ package com.dynatrace.easytrade.creditcardorderservice;
 import com.dynatrace.easytrade.creditcardorderservice.models.*;
 import java.sql.*;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -28,6 +29,8 @@ public class DatabaseHelper {
     private final String DELETE_CREDIT_CARD_BY_ACCOUNT_ID_QUERY = "DELETE FROM CreditCards WHERE CreditCardOrderId = (SELECT y.Id FROM CreditCardOrders y WHERE y.AccountId = ?)";
     private final String DELETE_ORDER_BY_ACCOUNT_ID_QUERY = "DELETE FROM CreditCardOrders WHERE AccountId = ?";
     private final String GET_ORDER_ID_AND_CURRENT_STATUS = "select x.CreditCardOrderId, x.Status from CreditCardOrderStatus x inner join (select max(Id) Id, CreditCardOrderId from CreditCardOrderStatus group by CreditCardOrderId) y on x.CreditCardOrderId = y.CreditCardOrderId and x.Id = y.Id";
+    private final String GET_ALL_ORDERS_QUERY = "SELECT Id FROM CreditCardOrders";
+    private final String GET_ALL_STATUSES_QUERY = "SELECT CreditCardOrderId, Status, Timestamp FROM CreditCardOrderStatus";
     private static final Logger logger = LoggerFactory.getLogger(DatabaseHelper.class);
 
     public String insertNewOrder(Connection conn, CreditCardOrderRequest request) throws SQLException {
@@ -98,6 +101,37 @@ public class DatabaseHelper {
             result = Optional.of(rs.getString("Id"));
         } else {
             result = Optional.empty();
+        }
+        query.close();
+        return result;
+    }
+
+    /** Loads every order id in a single set-based query (no per-row fan-out). */
+    public List<OrderRow> getAllOrders(Connection conn) throws SQLException {
+        PreparedStatement query = conn.prepareStatement(GET_ALL_ORDERS_QUERY);
+        ResultSet rs = query.executeQuery();
+
+        List<OrderRow> result = new ArrayList<>();
+        while (rs.next()) {
+            result.add(new OrderRow(rs.getString("Id")));
+        }
+        query.close();
+        return result;
+    }
+
+    /** Loads every status row in a single set-based query (no per-row fan-out). */
+    public List<OrderStatusRow> getAllOrderStatuses(Connection conn) throws SQLException {
+        PreparedStatement query = conn.prepareStatement(GET_ALL_STATUSES_QUERY);
+        ResultSet rs = query.executeQuery();
+
+        List<OrderStatusRow> result = new ArrayList<>();
+        while (rs.next()) {
+            OffsetDateTime timestamp = OffsetDateTime.ofInstant(
+                    rs.getTimestamp("Timestamp").toInstant(), ZoneId.of("UTC"));
+            result.add(new OrderStatusRow(
+                    rs.getString("CreditCardOrderId"),
+                    rs.getString("Status"),
+                    timestamp));
         }
         query.close();
         return result;
