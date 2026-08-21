@@ -1,15 +1,11 @@
 import {
-    FunctionProviderWrapper,
     IProvider,
     IVisit,
-    IntervalProviderWrapper,
-    PriorityProviderWrapper,
     WeightedProvider,
     createLoggerOptions,
 } from "@demoability/loadgen-core"
 import { Config } from "../config"
 import { getRegularProviderFunction } from "./regularVisits"
-import { getRareProviderFunction, getRareVisitInterval } from "./rareVisits"
 import { RateLimitedProviderWrapper } from "@demoability/loadgen-core/lib/providers"
 import { TIME_UNITS } from "@demoability/loadgen-core/lib/time"
 
@@ -31,21 +27,13 @@ export function getProvider(config: Config): IProvider<IVisit> {
         config.regularVisitsWeights,
         getRegularProviderFunction(config)
     )
-    const rareVisitsProvider = new IntervalProviderWrapper(
-        new FunctionProviderWrapper(getRareProviderFunction(config)),
-        getRareVisitInterval(config)
-    )
-    const priorityProvider = new PriorityProviderWrapper([
-        rareVisitsProvider,
-        regularVisitProvider,
-    ])
     if (config.providerConfig.type === "constant") {
-        return priorityProvider
+        return regularVisitProvider
     }
     const { learnTimeFactor, timeframeMinutes, offHoursLoadFactor } =
         config.providerConfig
     return new RateLimitedProviderWrapper(
-        priorityProvider,
+        regularVisitProvider,
         { unit: TIME_UNITS.MINUTE, quantity: timeframeMinutes },
         (now: Date) => {
             if (isNYSEOpenHours(now)) {

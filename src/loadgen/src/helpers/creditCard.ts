@@ -35,6 +35,15 @@ export async function orderCard(
     await pageActions.click(selectors.creditCardPage_orderCardButton)
 }
 
+export async function viewCreditCardStatus(
+    pageActions: IPageActions
+): Promise<void> {
+    // Navigating to the credit-card section auto-redirects to the status
+    // timeline while an order is in progress, which fetches the full order
+    // status history (GET /v1/orders/{accountId}/status).
+    await gotoPageWithNavBar(pageActions, selectors.navigation_creditCardPage)
+}
+
 export async function revokeCard(pageActions: IPageActions): Promise<void> {
     await pageActions.navigate(selectors.creditCardPage_revokeCard)
 }

@@ -7,6 +7,7 @@ import {
     gotoCreditCardPage,
     orderCard,
     revokeCard,
+    viewCreditCardStatus,
 } from "../helpers/creditCard"
 import { login } from "../helpers/login"
 import { logout } from "../helpers/logout"
@@ -20,12 +21,20 @@ export class OrderCreditCardVisit implements IVisit {
     readonly url: URL
     readonly user: User
     readonly cardType: string
+    readonly statusViews: number
 
-    constructor(visitName: VisitName, url: URL, user: User, cardType: string) {
+    constructor(
+        visitName: VisitName,
+        url: URL,
+        user: User,
+        cardType: string,
+        statusViews: number
+    ) {
         this.visitName = visitName
         this.url = url
         this.user = user
         this.cardType = cardType
+        this.statusViews = statusViews
     }
 
     async setup(pageActions: IPageActions, logger: Logger): Promise<void> {
@@ -45,6 +54,16 @@ export class OrderCreditCardVisit implements IVisit {
 
         await gotoCreditCardPage(pageActions)
         await this.orderCard(pageActions, logger)
+
+        // View the order status timeline a few times to drive the status-history
+        // endpoint (GET /v1/orders/{accountId}/status).
+        for (let i = 0; i < this.statusViews; i++) {
+            logger.info(
+                `Viewing credit card status for user [${this.user.username}] (${i + 1}/${this.statusViews})`
+            )
+            await viewCreditCardStatus(pageActions)
+            await pageActions.standardDelay()
+        }
 
         logger.info(`Logging out user [${this.user.username}]`)
         await logout(pageActions)

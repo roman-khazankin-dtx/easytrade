@@ -42,9 +42,9 @@ export function getConfig(): Config {
             ["silly", "debug", "verbose", "http", "info", "warn", "error"],
             "info"
         ),
-        rareVisitsIntervalMinutes: EnvConfig.ensureNumber(
-            "RARE_VISITS_INTERVAL_MINUTES",
-            30
+        creditCardStatusViews: EnvConfig.ensureNumber(
+            "CREDIT_CARD_STATUS_VIEWS",
+            5
         ),
         headlessMode: EnvConfig.ensureEnum(
             "HEADLESS_MODE",
@@ -99,6 +99,10 @@ export function getConfig(): Config {
             sell_and_withdraw_success: EnvConfig.ensureNumber(
                 "SELL_AND_WITHDRAW_SUCCESS_WEIGHT",
                 1
+            ),
+            order_credit_card: EnvConfig.ensureNumber(
+                "ORDER_CREDIT_CARD_WEIGHT",
+                5
             ),
         },
     }

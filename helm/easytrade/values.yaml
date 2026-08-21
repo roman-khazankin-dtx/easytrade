@@ -19,6 +19,9 @@ accountservice:
   env:
     MANAGER_HOSTANDPORT: "{{ .Release.Name }}-manager:8080"
     PROXY_PREFIX: "accountservice"
+    # PreserveFramePointer aids profiling; ExitOnOutOfMemoryError makes the JVM
+    # terminate on OOM (UC2 memory leak) so Kubernetes restarts the pod promptly.
+    JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer -XX:+ExitOnOutOfMemoryError"
   resources:
     requests:
       cpu: 30m
@@ -228,7 +231,9 @@ loadgen:
   enabled: true
   env:
     EASYTRADE_URL: "http://{{ .Release.Name }}-frontendreverseproxy:8080"
-    RARE_VISITS_INTERVAL_MINUTES: "60"
+    # Drive the UC1 hot path (GET /v1/orders/{id}/status). Raise to burn more CPU.
+    ORDER_CREDIT_CARD_WEIGHT: "5"
+    CREDIT_CARD_STATUS_VIEWS: "5"
   resources:
     requests:
       cpu: "1"

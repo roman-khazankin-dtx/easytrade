@@ -170,7 +170,7 @@ services:
     environment:
       MANAGER_HOSTANDPORT: manager:8080
       PROXY_PREFIX: accountservice
-      JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer"
+      JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer -XX:+ExitOnOutOfMemoryError"
       # UC2 profiling defect (hidden activation — NOT a feature-flag-service flag).
       # Uncomment to arm the memory leak; the app exposes no way to discover this.
       # REQUEST_TRACE_RETENTION_ENABLED: "true"

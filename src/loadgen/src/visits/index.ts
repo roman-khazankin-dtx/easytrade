@@ -1,4 +1,4 @@
-export { RareVisits, RegularVisits, VisitName } from "./types"
+export { RegularVisits, VisitName } from "./types"
 
 export { DepositAndBuyVisit } from "./depositAndBuy"
 export {

@@ -402,9 +402,11 @@ memory-growth signal; env-var activation meant no flag client or loadgen changes
    the defect is discoverable via REST/Swagger/frontend (§2.1). The earlier `memory_leak` flag and
    the OpenFeature client wiring were removed from `accountservice` and `feature-flag-service`.
 2. **The leak.** On each `GET /account/{id}`, when armed, `accumulateRequestTrace()` appends a
-   4 KB `byte[]` to a `static` `HEAP_RETAINER` list that is **never cleared** — monotonic heap
+   16 KB `byte[]` to a `static` `HEAP_RETAINER` list that is **never cleared** — monotonic heap
    growth. The method is distinctly named so the allocation profiler shows the frame unambiguously
-   (mirrors `HighCpuUsage`'s `[MethodImpl(NoInlining)]` intent).
+   (mirrors `HighCpuUsage`'s `[MethodImpl(NoInlining)]` intent). The pod runs with
+   `-XX:+ExitOnOutOfMemoryError` (compose + Helm) so it terminates on OOM and Kubernetes restarts
+   it, giving a clean sawtooth rather than a hung pod.
 3. **Arm/verify locally** via `compose.dev.yaml`: set `REQUEST_TRACE_RETENTION_ENABLED: "true"` on
    the `accountservice` block (commented example already present) and restart the pod; watch
    heap/RSS climb under load; disarm (remove the env var + restart) → confirm it plateaus (the
@@ -427,7 +429,7 @@ memory-growth signal; env-var activation meant no flag client or loadgen changes
     file: src/accountservice/src/main/java/com/dynatrace/easytrade/accountservice/AccountController.java
     symbol: AccountController#accumulateRequestTrace
     trigger: GET /account/{id}
-    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 4 KB/request, never freed while armed
+    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 16 KB/request, never freed while armed; JVM runs -XX:+ExitOnOutOfMemoryError so the pod restarts on OOM
   expected_signal:
     profiling: allocation hotspot at AccountController#accumulateRequestTrace; retained set grows with request count
     metric: heap/RSS monotonic increase; plateaus when disarmed
@@ -465,6 +467,25 @@ profiler — which is exactly why UC7 was dropped.
 correct fix is *not* "optimize the loop" but "stop recomputing a cacheable result every request" —
 the over-eager `OrderOverviewService#invalidate()` on every write. This disambiguates a genuine
 hotspot-to-optimize (bare UC1) from a hotspot that should not be running at all.
+
+**Making it manifest (load requirements).** The defect only produces CPU signal if two conditions
+hold — both were initially missing, so the first deployment sat idle:
+1. **The endpoint must be driven.** `getOverview()` runs only from `getStatusHistory`
+   (`GET /v1/orders/{accountId}/status`). loadgen's `order_credit_card` visit was *rare* and only
+   ordered/revoked a card — it never viewed the status timeline, so the endpoint saw ~zero traffic.
+   Fix: `order_credit_card` is now a **regular, weighted** visit (`ORDER_CREDIT_CARD_WEIGHT`,
+   default 5) that, after ordering, re-visits the credit-card page (which auto-redirects to the
+   status timeline for an in-progress order) `CREDIT_CARD_STATUS_VIEWS` times (default 5).
+2. **The dataset must be large.** `CreditCardOrders`/`CreditCardOrderStatus` seed empty and orders
+   are ~1/account (capped, deleted on revoke), so `O(n²)` was microseconds. Fix:
+   `src/db/sql-scripts/sql-seed-creditcard-history.sql` seeds a stable history (default 3000 orders
+   × 5 statuses = 15000 rows → ~45M iterations/recompute) on **dedicated synthetic accounts**
+   (`Origin = 'SEED_CCORDER'`) that loadgen never logs into, so the seed can't be eroded by revokes.
+   Knobs: `@synthAccounts`, `@ordersPerAccount`.
+
+Neither lever alone is enough: driving the endpoint over an empty DB stays cheap; a big DB never
+recomputed stays idle. Together (with the cache defeated on every write) every `/status` call pays
+the full `O(n²)` → a sustained CPU hotspot. Dial CPU via the seed size and the two loadgen knobs.
 
 > **Flag-free by design (and why that's fine here).** This defect ships as **default behaviour**
 > with no activation env var — there is nothing to "arm," which also means there is nothing about it

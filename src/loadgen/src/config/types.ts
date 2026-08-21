@@ -30,7 +30,7 @@ export type Config = {
     concurrent_browsers: number
     browserTimeToLiveMinutes: number
     logLevel: string
-    rareVisitsIntervalMinutes: number
+    creditCardStatusViews: number
     headlessMode: HeadlessMode
     visitsConfig: VisitsConfig
     providerConfig: ProviderConfig

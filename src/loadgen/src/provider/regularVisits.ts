@@ -5,6 +5,7 @@ import {
     DepositAndBuyVisit,
     DepositAndLongBuyVisit,
     LongSellVisit,
+    OrderCreditCardVisit,
     RegularVisits,
     SellAndWithdrawVisit,
     errorBuyCalculator,
@@ -14,6 +15,8 @@ import {
     timeoutBuyCalculator,
     timeoutSellCalculator,
 } from "../visits"
+import { arrayRandom } from "../utils"
+import { EASYTRADE_CREDIT_CARD_TYPES } from "../const"
 
 export function getDepositValue({
     visitsConfig: { depositMinValue, depositMaxValue },
@@ -113,6 +116,18 @@ export function getRegularProviderFunction(
                     user,
                     assetSellRatio,
                     withdrawMinValue
+                )
+            }
+            case "order_credit_card": {
+                const cardType = arrayRandom(
+                    EASYTRADE_CREDIT_CARD_TYPES
+                ) as string
+                return new OrderCreditCardVisit(
+                    "order_credit_card",
+                    easytradeUrl,
+                    user,
+                    cardType,
+                    config.creditCardStatusViews
                 )
             }
         }

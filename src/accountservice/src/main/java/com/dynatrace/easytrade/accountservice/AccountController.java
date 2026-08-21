@@ -60,9 +60,9 @@ public class AccountController {
     }
 
     // Distinct name so allocation profiler shows this frame clearly.
-    // Appends a 4 KB buffer per call, retained in HEAP_RETAINER indefinitely.
+    // Appends a 16 KB buffer per call, retained in HEAP_RETAINER indefinitely.
     private void accumulateRequestTrace(int accountId) {
-        byte[] trace = new byte[4096];
+        byte[] trace = new byte[16384];
         trace[0] = (byte) (accountId & 0xFF);
         trace[1] = (byte) ((accountId >> 8) & 0xFF);
         HEAP_RETAINER.add(trace);
