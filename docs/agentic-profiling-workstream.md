@@ -324,7 +324,7 @@ decision driven by which service gives the cleanest signal under load.
 |---|---|---|---|---|
 | UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second always-on hot path (regex backtracking / expensive serialization) beside the Collatz loop |
 | UC1 CPU hotspot (Java, cache-defeat) | Java | `credit-card-order-service` | ✅ implemented | Expensive `O(n²)` `OrdersOverview#build` meant to be cached, but invalidated on every status write (`OrderController`, `WorkScheduler`) → never warm → rebuild runs on every `GET /v1/orders/{id}/status`. **Always-on (no env gate)** — see §7.1 |
-| UC2 Memory leak | Java | `accountservice` | ✅ implemented | always-on `static` collection (`AccountControllerV2`) that grows 16 KB per `GET /accounts/{id}` and is never freed; JVM `-XX:+ExitOnOutOfMemoryError` restarts the pod on OOM |
+| UC2 Memory leak | Java | `accountservice` | ✅ implemented | always-on `static` collection (`AccountControllerV2`) that grows 256 KB per `GET /accounts/{id}` and is never freed; JVM `-XX:+ExitOnOutOfMemoryError` restarts the pod on OOM |
 | UC3 Lock contention | Java | TBD | planned | always-on coarse `synchronized`/`ReentrantLock` around a hot section → threads block, CPU idle |
 | UC4 Thread-pool exhaustion | Java | TBD | planned | always-on bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
 | UC5 GC / alloc churn | Java | TBD | planned | always-on high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
@@ -393,7 +393,7 @@ memory-growth signal; always-on activation means no flag client, env var, or loa
 1. **No activation — always-on (§2.1).** The leak is baked into the service's default behaviour:
    no `feature-flag-service` flag and no env var. The earlier `memory_leak` flag + OpenFeature
    wiring, and then the interim `REQUEST_TRACE_RETENTION_ENABLED` env var, were both removed.
-2. **The leak.** On each `GET /accounts/{id}`, `accumulateRequestTrace()` appends a 16 KB `byte[]`
+2. **The leak.** On each `GET /accounts/{id}`, `accumulateRequestTrace()` appends a 256 KB `byte[]`
    to a `static` `HEAP_RETAINER` list that is **never cleared** — monotonic heap growth. The method
    is distinctly named so the allocation profiler shows the frame unambiguously. The pod runs with
    `-XX:+ExitOnOutOfMemoryError` (compose + Helm) so it terminates on OOM and Kubernetes restarts
@@ -420,7 +420,7 @@ memory-growth signal; always-on activation means no flag client, env var, or loa
     file: src/accountservice/src/main/java/com/dynatrace/easytrade/accountservice/AccountControllerV2.java
     symbol: AccountControllerV2#accumulateRequestTrace
     trigger: GET /accounts/{id}
-    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 16 KB/request, never freed; JVM runs -XX:+ExitOnOutOfMemoryError so the pod restarts on OOM
+    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 256 KB/request, never freed; JVM runs -XX:+ExitOnOutOfMemoryError so the pod restarts on OOM
   expected_signal:
     profiling: allocation hotspot at AccountControllerV2#accumulateRequestTrace; retained set grows with request count
     metric: heap/RSS monotonic increase; sawtooth as the pod OOM-restarts
