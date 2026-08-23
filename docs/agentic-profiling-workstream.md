@@ -26,11 +26,12 @@ confirm the profiling product surfaces the right frames.
 
 ## 2. What "good" looks like
 
-- Each defect is **toggle-able** (on/off, ideally with intensity) by the eval operator.
-- Each defect's activation is **concealed from anyone inspecting the running app** — the
-  investigating agent must not be able to discover *that a defect is armed* through the app's own
-  surfaces (see §2.1). Toggling may require a pod restart; that is an acceptable price for
-  concealment.
+- Each defect is **always-on** (baked into the service's default behaviour) with **no activation
+  flag or env var** — there is nothing to arm and nothing to discover from the running app (see
+  §2.1). Intensity is tuned at the source/dataset level (e.g. UC1's seeded history), not a runtime
+  toggle.
+- Each defect stays **undiscoverable from the running app** — because there is no activation signal
+  at all, the agent must localize it from *profiling signal*, not from a flag or env var (see §2.1).
 - Each defect has a **documented ground-truth root cause** (service, file, symbol, expected
   flamegraph signature).
 - Defects run against a **steady baseline of realistic traffic** so profiles are non-trivial and
@@ -40,47 +41,44 @@ confirm the profiling product surfaces the right frames.
 - The whole thing is **deployable to K8s and monitored by a Dynatrace tenant** with profiling
   enabled, and is stable enough to leave running for days.
 
-### 2.1 Activation & concealment (why NOT feature flags)
+### 2.1 Activation: none (always-on, flag-free, env-free)
 
-**Principle: profiling defects must NOT be armed through EasyTrade's `feature-flag-service`.**
+**Principle: profiling defects carry NO activation mechanism — no `feature-flag-service` flag and
+no environment variable. Each defect is baked into the service's default behaviour and is always
+on.**
 
 The whole point of the agentic eval is to score whether an agent can *diagnose a defect from
-profiling signal*. If the agent can simply discover the defect is armed, the eval measures nothing.
-EasyTrade's feature-flag mechanism is the opposite of concealed — a flag is advertised through
-every app-facing surface:
+profiling signal*. If the agent can discover *that a defect is armed* from the running app, the eval
+measures nothing. We considered two activation mechanisms and rejected both:
 
-- **REST API** — `GET /feature-flag-service/v1/flags?tag=problem_pattern` returns every problem
-  pattern, its enabled state, name, and a plain-English description of what it does.
-- **Swagger UI** — `…/feature-flag-service/swagger-ui/index.html` lists them interactively.
-- **Frontend** — the app ships a `/feature-flags` page that renders each `problem_pattern` flag,
-  its human description, and a ready-to-paste `curl` command to flip it.
+- **Feature flags — rejected.** EasyTrade's `feature-flag-service` advertises every flag through the
+  REST API (`GET /feature-flag-service/v1/flags?tag=problem_pattern`), the Swagger UI, and the
+  frontend `/feature-flags` page (name, description, ready-to-paste `curl`). A flag named
+  `memory_leak` described as *"…growing heap monotonically…"* hands the agent the answer key.
+  Feature flags stay appropriate for the **functional** problem patterns (`DbNotResponding`,
+  `FactoryCrisis`, …) that are *meant* to be demoed from the UI — they are wrong for a hidden
+  ground-truth eval.
+- **Env-var activation — also dropped.** An earlier version armed defects via a neutrally-named
+  private env var (e.g. UC2's `REQUEST_TRACE_RETENTION_ENABLED`). It removed the flag-plumbing cost,
+  but still leaves an arming signal an agent with cluster access (`kubectl get deploy -o yaml`) or a
+  tenant view of captured process env vars could read — and it is one more thing to get wrong (UC2
+  in fact shipped with the env var *unset* in Helm, so it never leaked; see §7). We dropped it.
 
-So a flag named `memory_leak` with the description *"…growing heap monotonically…"* hands the agent
-the answer key. Feature flags stay appropriate for the **functional** problem patterns
-(`DbNotResponding`, `FactoryCrisis`, …) that are *meant* to be demoed and toggled from the UI —
-they are just wrong for a **hidden ground-truth** eval.
+**No-activation contract for every profiling defect (UC1–UC11):**
 
-**Concealed-activation contract for every profiling defect (UC1–UC11):**
+1. **Always-on.** The defect is default behaviour in the service code. There is no flag, no env var,
+   no runtime toggle — nothing to arm and therefore nothing to discover from the live app.
+2. **Scenarios do not overlap.** Each UC runs on its own isolated deployment (one scenario per
+   instance, §6 Q4), so an always-on defect never contaminates another scenario's profiles. This is
+   what removes the need for a clean, un-armed baseline from the same image.
+3. **Source code is a permitted oracle, the running app is not.** The agent may be granted the repo
+   to *propose a fix* — the defect living plainly in source is fine and intended. What the eval
+   tests is whether the agent localizes it from *profiling signal*, not from a flag or env var.
 
-1. **Activate via a private environment variable**, read by the service (typically once at
-   startup), never through `feature-flag-service` / OpenFeature. Env vars are not exposed by any
-   EasyTrade endpoint, Swagger, or the frontend.
-2. **Use a neutral, non-descriptive variable name** that does not name the defect. It may surface
-   in process properties on the monitored tenant, so it must not read as "leak/hotspot/etc." —
-   e.g. UC2 uses `REQUEST_TRACE_RETENTION_ENABLED` (looks like a diagnostic-tracing toggle), not
-   `ENABLE_MEMORY_LEAK`.
-3. **Default to off** (absent/false ⇒ normal behaviour), so an un-armed deployment is clean.
-4. **Arm only from the deployment layer** — the eval harness sets the env var in the K8s
-   Deployment (or `compose.dev.yaml`) and restarts the pod. There is intentionally no runtime
-   REST toggle; a restart to arm/disarm is acceptable.
-5. **Source code is a permitted oracle, the running app is not.** The agent may be granted the
-   repo to *propose a fix* — the defect living plainly in source is fine and intended. What must
-   stay hidden is any signal, queryable from the *live app*, that a defect is currently armed.
-
-Residual risk to keep in mind: an agent with cluster access (`kubectl get deploy -o yaml`) or a
-tenant view that exposes captured environment variables could still read the arming variable. The
-neutral naming (rule 2) mitigates this; if a stronger boundary is ever needed, bake the defect into
-a dedicated image variant instead of an env var. Track this in §6.
+Trade-off we accept: the same image cannot serve a clean baseline, and the defect is present in
+every deployment of that service on the fork. Both are fine under per-scenario isolation (§6 Q4). If
+we ever need several UCs live on one shared instance, we would reintroduce a concealed toggle then —
+out of scope for now.
 
 ## 3. Proposed profiling use-cases (generic, product-agnostic)
 
@@ -94,7 +92,7 @@ backtracking, unbounded serialization, crypto in a hot path).
 - **Agent task:** identify the offending service + method/stack, quantify its CPU share, and
   propose the fix. Ground truth = the injected hot method.
 - **Two realizations (see §5):**
-  - *(.NET, planned)* `broker-service` — a second env-gated hot path beside the existing
+  - *(.NET, planned)* `broker-service` — a second always-on hot path beside the existing
     `HighCpuUsage` Collatz busy-loop. Keeps one non-JVM host in the mix.
   - *(Java, ✅ implemented)* `credit-card-order-service` — a **cache-defeat** variant that is
     deliberately harder than a bare busy-loop. An expensive `O(n²)` "orders overview"
@@ -164,7 +162,7 @@ appender I/O — executed on every request.
   level or making the appender async. Distinguish from UC1 (business CPU) and UC9 (serialization as
   the product, not as a log argument).
 - **Grounded in:** `accountservice`/`engine` already `logger.info(...)` per request, and
-  `AccountController` PUT logs `gson.toJson(accountDetails)`; the env-gated defect turns this into
+  `AccountController` PUT logs `gson.toJson(accountDetails)`; the always-on defect turns this into
   per-request JSON-of-a-large-object logging at INFO.
 
 ### UC9 — Serialization / deserialization overhead (marshalling CPU + allocation)
@@ -178,7 +176,7 @@ repeatedly-processed payloads (parse → transform → re-serialize), rather tha
   the round-trip. Distinguishes library-marshalling cost from an arbitrary hot loop (UC1) and from
   business-object churn (UC5).
 - **Grounded in:** `accountservice` uses `Gson` to parse the `manager` response and serialize
-  bodies; the env-gated defect re-serializes/re-parses the payload repeatedly (or pretty-prints a
+  bodies; the always-on defect re-serializes/re-parses the payload repeatedly (or pretty-prints a
   large object) on `GET /account/{id}`.
 
 ### UC10 — Thread leak → native-memory growth (distinct from UC4 saturation)
@@ -192,7 +190,7 @@ but for threads/native memory rather than heap.
   (UC4 — bounded count, full queue) and from a *heap* leak (UC2 — RSS growth is off-heap here).
   Locate the code creating the never-joined threads. This pairs with UC4 the way UC2 pairs with UC5.
 - **Grounded in:** `contentcreator` already spawns `new Thread(...)`; card services use bounded
-  `ScheduledExecutorService` (size 1–2). The env-gated defect spawns a per-request thread that
+  `ScheduledExecutorService` (size 1–2). The always-on defect spawns a per-request thread that
   blocks forever instead of reusing a pool.
 
 ### UC11 — Busy-wait / spin-poll (CPU that is really a wait)
@@ -207,7 +205,7 @@ computing.
   *not* a real hotspot to optimize but a spin that should block/await. This is the sharpest
   disambiguation against UC1 (genuine compute) and complements UC3/UC6 (honest off-CPU waits).
 - **Grounded in:** `engine`'s scheduler loop and any request path that awaits a downstream (the
-  `HttpClient.send` results) can be replaced, under the env gate, by a spin-poll instead of a
+  `HttpClient.send` results) can be replaced, always-on, by a spin-poll instead of a
   blocking call.
 
 > **Cross-cutting scenario (stretch): release regression / profile diff.** Ship a "slow" build,
@@ -260,8 +258,8 @@ the scaffolding; what's missing is profiling-specific fault injection across run
     `EasyTradeProvider`). Adding a flag = one edit to `FeatureFlagConfig.java` +
     `application.properties`, plus a per-service constant.
     **⚠️ Not usable for profiling defects:** flags are advertised via REST, Swagger, and the
-    frontend `/feature-flags` page, which reveals armed defects to the investigating agent. See
-    §2.1 — profiling defects use concealed env-var activation instead. The flag framework remains
+    frontend `/feature-flags` page, which would reveal a defect to the investigating agent. See
+    §2.1 — profiling defects are always-on with no activation at all. The flag framework remains
     the right tool for the demo-facing functional patterns.
   - **`problem-operator`** (Go) is a pluggable k8s operator: on a 5s ticker it reconciles flags
     against Deployment specs. Adding an operator-driven behavior = a new package in
@@ -276,10 +274,9 @@ the scaffolding; what's missing is profiling-specific fault injection across run
   RabbitMQ queue (`pricing-service` → `calculationservice`). Real cross-service work means the
   profiler has non-trivial stacks to attribute, and off-CPU/DB-wait scenarios are natural.
 - **Already Dynatrace-native** — K8s + Helm deployment, Monaco configs, documented DQL workflow.
-- **Arming is deployment-driven** — profiling defects flip via a concealed env var set on the
-  Deployment/compose environment (§2.1), so the eval harness arms/disarms them between runs by
-  patching env + restarting the pod. (Note: this is deliberately *not* the API-driven runtime
-  toggle used by the demo-facing functional flags — concealment is worth the restart.)
+- **No arming step at all** — profiling defects are always-on default behaviour (§2.1). There is no
+  flag and no env var to set; deploying the service *is* arming it. Per-scenario isolation (§6 Q4)
+  keeps that from contaminating other scenarios.
 
 ### 4.2 Gaps / what we'd need to add
 - **Only 1 of 4 existing patterns is truly profiling-shaped**, and two are *misleadingly named*:
@@ -292,20 +289,14 @@ the scaffolding; what's missing is profiling-specific fault injection across run
     Go backoff. Availability/latency fault, no CPU/mem cost.
   → We must **build new patterns for UC2–UC5** (leak, contention, pool exhaustion, GC pressure);
   none exist today.
-- **Concealed activation needs no flag plumbing — this is a simplification.** Because profiling
-  defects are armed by a private env var (§2.1) rather than the flag client, we do *not* need to
-  copy OpenFeature providers into the target services. This removes what used to be the highest-
-  friction item: Go services (`pricing-service`, `aggregator-service`) with **zero** flag plumbing,
-  and busy Java services (`engine`, `accountservice`) that lacked the `JavaProvider`/
-  `FeatureFlagClient` pair, can host a defect with just a `System.getenv`/`os.Getenv` read. (UC2 in
-  `accountservice` was the first to switch: its OpenFeature client was removed in favour of the
-  `REQUEST_TRACE_RETENTION_ENABLED` env var.)
-- **Arming does not survive teardown, by design.** Env-var arming lives in the Deployment/compose
-  spec, so it persists across pod *restarts* (unlike the old in-memory flag state) but is removed
-  when the eval harness disarms. The harness owns the arm→restart→observe→disarm lifecycle.
+- **Always-on activation needs no plumbing — this is a simplification.** Because profiling defects
+  are baked into the service's default behaviour (§2.1), we need neither OpenFeature providers nor
+  an env-var read. Any service — Go (`pricing-service`, `aggregator-service`) with zero flag
+  plumbing, or busy Java services (`engine`, `accountservice`) — can host a defect as a plain code
+  change. (UC2 went through an env-var stage and then dropped it entirely.)
 - **No intensity control / ground-truth catalog yet.** We need a documented mapping
-  `pattern → {activation env var, service, file, symbol, expected flamegraph signature, expected
-  DQL}` to grade the agent objectively, plus an intensity knob (rate/size).
+  `pattern → {service, file, symbol, expected flamegraph signature, expected DQL}` to grade the
+  agent objectively, plus a source/dataset-level intensity knob (rate/size).
 - **GC realism varies by runtime** — Go has no classic stop-the-world GC-pause story like the
   JVM/.NET; pick per-runtime defects that are idiomatic (e.g. GC pressure → JVM/.NET, not Go).
 
@@ -317,7 +308,7 @@ enough surface to host all eleven use-cases realistically and to make the agent'
 
 ## 5. Proposed defect → service mapping (first cut)
 
-All defects are armed via a concealed env var (§2.1), so there is no flag-client "plumbing status"
+All defects are always-on with no activation mechanism (§2.1), so there is no flag-client "plumbing status"
 to track — any service can host a defect with a single `getenv` read.
 
 **Runtime decision: UC2–UC6 target Java services; UC1 stays .NET.** We concentrate the new defects
@@ -326,22 +317,22 @@ are all first-class there), keeping UC1 on .NET (`broker-service`) as the one cr
 representative that reuses the existing `HighCpuUsage` template. This is a deliberate trade against
 the original "spread across many runtimes" goal (§2) — Go/Node are dropped from the core set for
 now; revisit if we want broader runtime coverage. The **specific Java host per UC is left open**
-(TBD) — since env-var activation needs no per-service plumbing, host choice is a later, cheap
+(TBD) — since always-on activation needs no per-service plumbing, host choice is a later, cheap
 decision driven by which service gives the cleanest signal under load.
 
 | Use-case | Runtime | Host | Status | Injection idea |
 |---|---|---|---|---|
-| UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second env-gated hot path (regex backtracking / expensive serialization) beside the Collatz loop |
+| UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second always-on hot path (regex backtracking / expensive serialization) beside the Collatz loop |
 | UC1 CPU hotspot (Java, cache-defeat) | Java | `credit-card-order-service` | ✅ implemented | Expensive `O(n²)` `OrdersOverview#build` meant to be cached, but invalidated on every status write (`OrderController`, `WorkScheduler`) → never warm → rebuild runs on every `GET /v1/orders/{id}/status`. **Always-on (no env gate)** — see §7.1 |
-| UC2 Memory leak | Java | `accountservice` | ✅ implemented | `REQUEST_TRACE_RETENTION_ENABLED`-gated `static` collection that grows per `GET /account/{id}` and is never freed |
-| UC3 Lock contention | Java | TBD | planned | env-gated coarse `synchronized`/`ReentrantLock` around a hot section → threads block, CPU idle |
-| UC4 Thread-pool exhaustion | Java | TBD | planned | env-gated bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
-| UC5 GC / alloc churn | Java | TBD | planned | env-gated high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
-| UC6 Conditional cache-miss wait | Java | TBD | planned | env-gated cache with a tunable miss rate (~5%); missed requests fall back to a slow downstream/DB load → intermittent off-CPU/net-IO wait on the tail |
-| UC8 Logging overhead | Java | `accountservice`/`engine` (candidate) | planned | env-gated per-request INFO log that serializes a large object (`Gson#toJson`) and/or a synchronous appender → CPU in log frames + I/O |
-| UC9 Serialization overhead | Java | `accountservice` (candidate) | planned | env-gated repeated (de)serialization of the payload (parse→transform→re-serialize / pretty-print) on `GET /account/{id}` → serializer CPU + alloc |
-| UC10 Thread leak | Java | `contentcreator` (candidate) | planned | env-gated per-request `new Thread` that parks forever (never joined) → unbounded thread count + native-memory growth, heap flat |
-| UC11 Busy-wait / spin-poll | Java | `engine` (candidate) | planned | env-gated tight `while (!done)` spin replacing a blocking `HttpClient.send`/await → 100% CPU that is really a wait |
+| UC2 Memory leak | Java | `accountservice` | ✅ implemented | always-on `static` collection (`AccountControllerV2`) that grows 16 KB per `GET /accounts/{id}` and is never freed; JVM `-XX:+ExitOnOutOfMemoryError` restarts the pod on OOM |
+| UC3 Lock contention | Java | TBD | planned | always-on coarse `synchronized`/`ReentrantLock` around a hot section → threads block, CPU idle |
+| UC4 Thread-pool exhaustion | Java | TBD | planned | always-on bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
+| UC5 GC / alloc churn | Java | TBD | planned | always-on high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
+| UC6 Conditional cache-miss wait | Java | TBD | planned | always-on cache with a tunable miss rate (~5%); missed requests fall back to a slow downstream/DB load → intermittent off-CPU/net-IO wait on the tail |
+| UC8 Logging overhead | Java | `accountservice`/`engine` (candidate) | planned | always-on per-request INFO log that serializes a large object (`Gson#toJson`) and/or a synchronous appender → CPU in log frames + I/O |
+| UC9 Serialization overhead | Java | `accountservice` (candidate) | planned | always-on repeated (de)serialization of the payload (parse→transform→re-serialize / pretty-print) on `GET /account/{id}` → serializer CPU + alloc |
+| UC10 Thread leak | Java | `contentcreator` (candidate) | planned | always-on per-request `new Thread` that parks forever (never joined) → unbounded thread count + native-memory growth, heap flat |
+| UC11 Busy-wait / spin-poll | Java | `engine` (candidate) | planned | always-on tight `while (!done)` spin replacing a blocking `HttpClient.send`/await → 100% CPU that is really a wait |
 
 **Notes driving these choices:**
 - **JVM focus (UC2–UC11):** the JVM exposes rich, distinct profiling signals for every pillar
@@ -350,15 +341,17 @@ decision driven by which service gives the cleanest signal under load.
 - **UC8–UC11 are grounded in existing code** (see the "Grounded in" notes in §3): real
   per-request logging, `Gson` usage, `new Thread` spawning, and blocking downstream calls already
   exist, so each defect is a small, believable mutation of a real path rather than a synthetic add-on.
-- **Host = TBD, on purpose:** concealed env-var activation removes the per-service plumbing cost,
-  so we pick each host later based on signal quality. Practical hints for when we do: the always-on
+- **Host = TBD, on purpose:** always-on activation removes the per-service plumbing cost, so we pick
+  each host later based on signal quality. Practical hints for when we do: the request-driven
   concurrency/wait defects (UC3/UC4/UC6) want a **busy, request-driven** Java service
   (`accountservice` is the obvious candidate); UC5's steady alloc churn suits a **background-loop**
   service (`engine`'s scheduler) that generates signal without needing request traffic; the
   low-traffic card services (`credit-card-order-service`, `third-party-service`) are weak hosts for
-  load-dependent defects unless we bump their `loadgen` frequency.
+  load-dependent defects unless we drive the right endpoint hard (see UC1's loadgen changes, §7.1).
 - **UC2 landed in `accountservice`** (a busy Java service under continuous load) for a strong
-  memory-growth signal — the reference implementation for the concealed-activation pattern.
+  memory-growth signal — the reference implementation for the always-on / flag-free pattern. Note
+  the leak must sit on a **trafficked** endpoint (`AccountControllerV2` / `/accounts/{id}`), not the
+  dead `/account/{id}` — see the §7 post-mortem.
 - **UC1 now has two hosts.** The .NET `broker-service` variant (planned) reuses the existing
   profiler-visible `HighCpuUsage` template and keeps one non-JVM host in the mix. The Java
   `credit-card-order-service` variant (✅ implemented, §7.1) is the **cache-defeat CPU hotspot** that
@@ -370,7 +363,8 @@ decision driven by which service gives the cleanest signal under load.
 
 1. **Which Dynatrace tenant(s)** host this, and is continuous profiling enabled there today?
 2. **Eval harness** — does agentic-eval already have a runner we plug into, or do we build the
-   arm-defect → wait → query-tenant → grade loop from scratch?
+   deploy → wait → query-tenant → grade loop from scratch? (No arm/disarm step — defects are
+   always-on, §2.1.)
 3. **Ground-truth grading** — score on "named the right service", "named the right method", or a
    rubric? Who owns the answer key?
 4. ~~**One app instance or per-scenario instances?**~~ **Resolved: per-scenario, non-overlapping.**
@@ -379,13 +373,13 @@ decision driven by which service gives the cleanest signal under load.
    shared instance) — see the §7.1 note. Revisit only if we ever need several UCs live at once on one
    instance.
 5. ~~**Do we upstream these patterns** into the public EasyTrade?~~ **Resolved: no.** We keep a
-   profiling-specific **fork** and do **not** open PRs to `origin` — concealed eval defects don't
+   profiling-specific **fork** and do **not** open PRs to `origin` — these eval defects don't
    belong in the public demo app (see the repo/contribution note at the top).
-6. ~~**UC2 target service**~~ **Resolved:** UC2 is implemented in `accountservice` with concealed
-   env-var activation (§2.1, §5). The old flag-client-plumbing trade-off no longer applies.
-7. **Is env-var concealment strong enough** for the eval's threat model, or do we need to prevent
-   an agent with cluster/tenant access from reading the arming variable (dedicated image variant,
-   built-in defect)? See the residual-risk note in §2.1.
+6. ~~**UC2 target service**~~ **Resolved:** UC2 is implemented in `accountservice`, always-on
+   (§2.1, §5, §7), on the trafficked `AccountControllerV2` / `/accounts/{id}` endpoint.
+7. ~~**Is env-var concealment strong enough** for the eval's threat model?~~ **Resolved:**
+   activation was dropped entirely (§2.1) — defects are always-on, so there is no arming variable to
+   read. The remaining exposure is that the defect lives in source, which is a permitted oracle.
 
 ## 7. Prototype — UC2 memory leak, end-to-end (implemented)
 
@@ -393,50 +387,47 @@ Goal: prove the whole loop on **one** defect before scaling — inject → obser
 product on a monitored tenant → capture ground truth → (later) grade an agent.
 
 **Target service: `accountservice`** (busy Java service under continuous load). Chosen for a strong
-memory-growth signal; env-var activation meant no flag client or loadgen changes were needed.
+memory-growth signal; always-on activation means no flag client, env var, or loadgen changes.
 
 **What was built:**
-1. **Concealed activation, not a feature flag.** The leak is gated by the private env var
-   `REQUEST_TRACE_RETENTION_ENABLED` (default off), read once at startup in
-   `AccountController`. There is deliberately **no** `feature-flag-service` flag, so nothing about
-   the defect is discoverable via REST/Swagger/frontend (§2.1). The earlier `memory_leak` flag and
-   the OpenFeature client wiring were removed from `accountservice` and `feature-flag-service`.
-2. **The leak.** On each `GET /account/{id}`, when armed, `accumulateRequestTrace()` appends a
-   16 KB `byte[]` to a `static` `HEAP_RETAINER` list that is **never cleared** — monotonic heap
-   growth. The method is distinctly named so the allocation profiler shows the frame unambiguously
-   (mirrors `HighCpuUsage`'s `[MethodImpl(NoInlining)]` intent). The pod runs with
+1. **No activation — always-on (§2.1).** The leak is baked into the service's default behaviour:
+   no `feature-flag-service` flag and no env var. The earlier `memory_leak` flag + OpenFeature
+   wiring, and then the interim `REQUEST_TRACE_RETENTION_ENABLED` env var, were both removed.
+2. **The leak.** On each `GET /accounts/{id}`, `accumulateRequestTrace()` appends a 16 KB `byte[]`
+   to a `static` `HEAP_RETAINER` list that is **never cleared** — monotonic heap growth. The method
+   is distinctly named so the allocation profiler shows the frame unambiguously. The pod runs with
    `-XX:+ExitOnOutOfMemoryError` (compose + Helm) so it terminates on OOM and Kubernetes restarts
    it, giving a clean sawtooth rather than a hung pod.
-3. **Arm/verify locally** via `compose.dev.yaml`: set `REQUEST_TRACE_RETENTION_ENABLED: "true"` on
-   the `accountservice` block (commented example already present) and restart the pod; watch
-   heap/RSS climb under load; disarm (remove the env var + restart) → confirm it plateaus (the
-   leak-vs-churn distinction is part of the ground truth).
-4. Deploy to a monitored tenant (Helm) with profiling enabled; confirm allocation profiling
-   attributes the growth to `accumulateRequestTrace` and the memory trend correlates.
+3. **It lives on the endpoint that actually gets traffic.** The leak sits in **`AccountControllerV2`**
+   (`/accounts/{id}`), which is what the frontend and `broker-service` call. An earlier version put
+   it in `AccountController` (`/account/{id}`, singular) — a **dead endpoint with no callers** — so
+   `accumulateRequestTrace` never ran. Combined with the env var being unset in Helm, the leak sat
+   flat for days on the tenant before this was caught (verified via `dtctl`: working-set memory
+   ~222 MB start vs. ~221 MB three days later). Both bugs are fixed.
+4. **Verify:** deploy (Helm) with profiling enabled and continuous loadgen traffic; confirm heap/RSS
+   climbs monotonically, allocation profiling attributes the growth to `accumulateRequestTrace`, and
+   the pod OOM-restarts into a sawtooth.
 5. The **ground-truth catalog entry** is below.
 
-**Ground-truth catalog entry (standardized format — note `activation`, not `flag`):**
+**Ground-truth catalog entry (standardized format — `activation: none`):**
 ```yaml
 - id: UC2-memory-leak
   activation:
-    mechanism: env-var            # concealed; NOT a feature-flag-service flag
-    var: REQUEST_TRACE_RETENTION_ENABLED
-    armed_when: "true"            # absent/false => normal behaviour
-    toggle: set on Deployment/compose env + restart pod
+    mechanism: none               # always-on default behaviour (no flag, no env var)
   service: accountservice
   runtime: java
   root_cause:
-    file: src/accountservice/src/main/java/com/dynatrace/easytrade/accountservice/AccountController.java
-    symbol: AccountController#accumulateRequestTrace
-    trigger: GET /account/{id}
-    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 16 KB/request, never freed while armed; JVM runs -XX:+ExitOnOutOfMemoryError so the pod restarts on OOM
+    file: src/accountservice/src/main/java/com/dynatrace/easytrade/accountservice/AccountControllerV2.java
+    symbol: AccountControllerV2#accumulateRequestTrace
+    trigger: GET /accounts/{id}
+    mechanism: unbounded static List<byte[]> (HEAP_RETAINER), 16 KB/request, never freed; JVM runs -XX:+ExitOnOutOfMemoryError so the pod restarts on OOM
   expected_signal:
-    profiling: allocation hotspot at AccountController#accumulateRequestTrace; retained set grows with request count
-    metric: heap/RSS monotonic increase; plateaus when disarmed
+    profiling: allocation hotspot at AccountControllerV2#accumulateRequestTrace; retained set grows with request count
+    metric: heap/RSS monotonic increase; sawtooth as the pod OOM-restarts
   expected_dql: <query>
   agent_answer_key:
     service: accountservice
-    method: AccountController#accumulateRequestTrace
+    method: AccountControllerV2#accumulateRequestTrace
     classification: leak (not churn)
 ```
 
@@ -527,18 +518,18 @@ the full `O(n²)` → a sustained CPU hotspot. Dial CPU via the seed size and th
 
 ## 8. Next steps (post-prototype)
 
-1. ✅ UC2 built end-to-end in `accountservice` with concealed activation (§7).
-2. ✅ UC1 (Java) cache-defeat CPU hotspot built end-to-end in `credit-card-order-service` (§7.1);
-   **always-on**, no env gate yet — see the §2.1 deviation note.
-3. Confirm the tenant has continuous profiling enabled; wire the arm→restart→wait→query→grade
-   harness (arming = env-var patch + pod restart, per §2.1).
+1. ✅ UC2 built end-to-end in `accountservice`, always-on (§7). Post-mortem: the leak must live on a
+   trafficked endpoint (`AccountControllerV2` / `/accounts/{id}`), not the dead `/account/{id}`.
+2. ✅ UC1 (Java) cache-defeat CPU hotspot built end-to-end in `credit-card-order-service` (§7.1),
+   always-on. Note the load requirements: the seeded dataset and the loadgen status-view traffic are
+   what make it burn CPU (see §7.1).
+3. Confirm the tenant has continuous profiling enabled; wire the deploy→wait→query→grade harness (no
+   arm/disarm step — defects are always-on, §2.1).
 4. Standardize the ground-truth catalog; backfill for the .NET UC1 (existing `HighCpuUsage`) — and
    migrate it off its `high_cpu_usage` flag so it isn't self-disclosing either. The Java UC1 (§7.1)
-   stays **flag-free/always-on** — no env gate — per the per-scenario isolation decision (§6 Q4).
-5. Roll out UC3–UC6, UC8–UC11 on **Java services** (§5). With scenarios running on isolated,
-   non-overlapping instances (§6 Q4), defects can ship **flag-free/always-on** like the Java UC1;
-   reach for a concealed env gate only where a UC genuinely needs an arm/disarm lifecycle (e.g. the
-   UC2 leak, where disarm-and-plateau is part of the ground truth, or an intensity knob). Sequence by
-   disambiguation value: always-on wait/CPU defects first (UC3, UC11), then the leak/churn pairs
-   (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9).
+   is already always-on.
+5. Roll out UC3–UC6, UC8–UC11 on **Java services** (§5), all **always-on** (§2.1) under per-scenario
+   isolation (§6 Q4). Sequence by disambiguation value: wait/CPU defects first (UC3, UC11), then the
+   leak/churn pairs (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9) — tune
+   intensity at the source/dataset level, not a runtime toggle.
 6. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.
