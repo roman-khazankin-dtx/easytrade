@@ -15,11 +15,23 @@ import org.springframework.web.bind.annotation.*;
 @CrossOrigin
 public class ManufacturerController {
     private static final Logger logger = LoggerFactory.getLogger(ManufacturerController.class);
+    private final FactoryProductionLine productionLine;
+
+    public ManufacturerController(FactoryProductionLine productionLine) {
+        this.productionLine = productionLine;
+    }
 
     @PostMapping("")
     @Operation(summary = "Produce a new credit card")
     public ResponseEntity<StandardResponse> issueCreditCard(@RequestBody CreditCardRequest request) {
         logger.info("Starting to issue a credit card for data: " + request);
+
+        // UC3 lock contention: reserve the single global production line before
+        // accepting the order. Under concurrent load, request threads block here
+        // on one monitor (off-CPU wait), while CPU stays idle. See
+        // FactoryProductionLine.
+        productionLine.reserveSlot();
+
         ManufactureScheduler.addProcess(new ManufactureProcess(request));
 
         return buildResponseEntity(HttpStatus.OK, "Credit card is being manufactured");

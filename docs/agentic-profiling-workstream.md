@@ -119,6 +119,13 @@ section, or a slow downstream/DB call.
 - **Signal:** off-CPU / wait profiling; latency high but CPU low; blocked-thread stacks.
 - **Agent task:** recognize the "slow but not CPU-bound" pattern, identify the contended
   monitor / blocking call site, and separate lock-wait from I/O-wait.
+- **Realization (Java, ✅ implemented):** `third-party-service` — a single global "production
+  line" monitor (`FactoryProductionLine#reserveSlot`, `synchronized`) that
+  `ManufacturerController#issueCreditCard` must acquire before accepting each card order, held for
+  an off-CPU interval (`FACTORY_SLOT_HOLD_MS`, default 150 ms). Under concurrent load, request
+  threads pile up **BLOCKED** on the one monitor while CPU stays idle. Because `/v1/manufacturer`
+  is normally driven by a *single* upstream scheduler thread (credit-card-order-service
+  `WorkScheduler`), the contention only manifests under a concurrent driver — see §7.2.
 
 ### UC4 — Thread-pool / concurrency exhaustion
 A bounded pool (HTTP worker pool, DB connection pool, executor) is saturated or threads leak,
@@ -192,6 +199,14 @@ but for threads/native memory rather than heap.
 - **Grounded in:** `contentcreator` already spawns `new Thread(...)`; card services use bounded
   `ScheduledExecutorService` (size 1–2). The always-on defect spawns a per-request thread that
   blocks forever instead of reusing a pool.
+- **Realization (Java, ✅ implemented):** `contentcreator` — each steady-state one-minute pricing
+  cycle hands every generated candle to a new `AsyncPricingWriter#submit` thread that is meant to
+  flush and exit but instead **parks forever** (`awaitFlushSignal` → `LockSupport.park`). No thread
+  is joined or pooled, so the live thread count climbs monotonically
+  (`PRICING_WRITER_THREADS_PER_CYCLE`, default one per instrument ≈ 15/min) and native memory grows
+  while the **heap stays flat**; the JVM runs `-XX:+ExitOnOutOfMemoryError` so the pod OOM-restarts
+  into a sawtooth. `contentcreator` is a background loop, so the leak is **load-independent** (no
+  driver needed). The startup back-fill deliberately does not leak. See §7.3.
 
 ### UC11 — Busy-wait / spin-poll (CPU that is really a wait)
 The service pegs a core in a tight polling loop (`while (!done) { … }` with no block/sleep) while
@@ -325,13 +340,13 @@ decision driven by which service gives the cleanest signal under load.
 | UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second always-on hot path (regex backtracking / expensive serialization) beside the Collatz loop |
 | UC1 CPU hotspot (Java, cache-defeat) | Java | `credit-card-order-service` | ✅ implemented | Expensive `O(n²)` `OrdersOverview#build` meant to be cached, but invalidated on every status write (`OrderController`, `WorkScheduler`) → never warm → rebuild runs on every `GET /v1/orders/{id}/status`. **Always-on (no env gate)** — see §7.1 |
 | UC2 Memory leak | Java | `accountservice` | ✅ implemented | always-on `static` collection (`AccountControllerV2`) that grows 256 KB per `GET /accounts/{id}` and is never freed; JVM `-XX:+ExitOnOutOfMemoryError` restarts the pod on OOM |
-| UC3 Lock contention | Java | TBD | planned | always-on coarse `synchronized`/`ReentrantLock` around a hot section → threads block, CPU idle |
+| UC3 Lock contention | Java | `third-party-service` | ✅ implemented | always-on single global `synchronized` monitor (`FactoryProductionLine#reserveSlot`) acquired per card order (`issueCreditCard`), held off-CPU (`FACTORY_SLOT_HOLD_MS`) → concurrent request threads block, CPU idle. Needs a concurrent driver to manifest (§7.2) |
 | UC4 Thread-pool exhaustion | Java | TBD | planned | always-on bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
 | UC5 GC / alloc churn | Java | TBD | planned | always-on high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
 | UC6 Conditional cache-miss wait | Java | TBD | planned | always-on cache with a tunable miss rate (~5%); missed requests fall back to a slow downstream/DB load → intermittent off-CPU/net-IO wait on the tail |
 | UC8 Logging overhead | Java | `accountservice`/`engine` (candidate) | planned | always-on per-request INFO log that serializes a large object (`Gson#toJson`) and/or a synchronous appender → CPU in log frames + I/O |
 | UC9 Serialization overhead | Java | `accountservice` (candidate) | planned | always-on repeated (de)serialization of the payload (parse→transform→re-serialize / pretty-print) on `GET /account/{id}` → serializer CPU + alloc |
-| UC10 Thread leak | Java | `contentcreator` (candidate) | planned | always-on per-request `new Thread` that parks forever (never joined) → unbounded thread count + native-memory growth, heap flat |
+| UC10 Thread leak | Java | `contentcreator` | ✅ implemented | always-on per-cycle `new Thread` (`AsyncPricingWriter#submit`) that parks forever (never joined/pooled) → unbounded thread count + native-memory growth, heap flat; `-XX:+ExitOnOutOfMemoryError` → sawtooth restart. Load-independent background loop (§7.3) |
 | UC11 Busy-wait / spin-poll | Java | `engine` (candidate) | planned | always-on tight `while (!done)` spin replacing a blocking `HttpClient.send`/await → 100% CPU that is really a wait |
 
 **Notes driving these choices:**
@@ -348,6 +363,20 @@ decision driven by which service gives the cleanest signal under load.
   service (`engine`'s scheduler) that generates signal without needing request traffic; the
   low-traffic card services (`credit-card-order-service`, `third-party-service`) are weak hosts for
   load-dependent defects unless we drive the right endpoint hard (see UC1's loadgen changes, §7.1).
+- **UC3 host resolved: `third-party-service` (+ concurrent driver).** The two busy, request-driven
+  Java services (`accountservice`, `credit-card-order-service`) were already taken by UC2/UC1, and
+  the invariant is **one defect per service** (all defects are always-on in shared images, so a
+  scenario deployment scopes to a service, and two defects on one service would break per-service
+  grading). Among the free Java services none does heavy *synchronous request* work — so UC3 landed
+  on `third-party-service`'s real `issueCreditCard` endpoint and the required **concurrency is
+  supplied by a dedicated driver** (`deploy/uc3-load/`), exactly as UC1 needed `uc1-load`. The lock
+  holder is off-CPU (a bounded sleep = the production line's cycle time), so the graded signal is
+  request threads **BLOCKED on the monitor**, not CPU. See §7.2.
+- **UC10 host resolved: `contentcreator`.** A background per-minute loop, so the thread leak is
+  **load-independent** and monotonic (the safest signal against the load-dependency failure mode
+  that bit UC1/UC2). Note the design's "per-request thread" framing became "per-cycle thread" here
+  because `contentcreator` serves no requests — the leak semantics (never-joined, never-pooled,
+  parks forever) are identical. See §7.3.
 - **UC2 landed in `accountservice`** (a busy Java service under continuous load) for a strong
   memory-growth signal — the reference implementation for the always-on / flag-free pattern. Note
   the leak must sit on a **trafficked** endpoint (`AccountControllerV2` / `/accounts/{id}`), not the
@@ -516,6 +545,113 @@ the full `O(n²)` → a sustained CPU hotspot. Dial CPU via the seed size and th
     classification: CPU hotspot whose root cause is a defeated cache (over-eager invalidation), not the loop itself
 ```
 
+## 7.2 UC3 (Java) — lock contention, end-to-end (implemented)
+
+Third defect built end-to-end, on `third-party-service`. The Java realization of UC3 (§3).
+
+**The scenario.** A single physical "production line" can manufacture only one credit card at a
+time. It is modelled as one global monitor — `FactoryProductionLine#reserveSlot`, a `synchronized`
+method on a singleton bean — that `ManufacturerController#issueCreditCard` must acquire before
+accepting each order. The critical section is held for `FACTORY_SLOT_HOLD_MS` (default 150 ms) of
+**off-CPU** time (a bounded sleep = the machine's fixed cycle time).
+
+**The bug (root cause).** Serializing *all* card issuance through one coarse monitor. Under
+concurrent orders, only one thread holds the line while the rest sit **BLOCKED** on the monitor —
+latency climbs, CPU stays idle. The fix is a finer-grained / per-resource lock or an async queue,
+not "more CPU".
+
+**Why this is a *profiling* defect.** The slow requests do no CPU work and make no downstream call
+while blocked, so a CPU flamegraph is flat and a trace shows a slow span with nothing inside it. The
+only way to localize it is **off-CPU / lock (monitor) analysis**, which attributes the wait to the
+`reserveSlot` monitor with threads in the BLOCKED state — the exact signal that distinguishes UC3
+(lock-wait) from UC1 (genuine compute) and from a per-request I/O wait.
+
+**Making it manifest (load requirement).** Like UC1, the defect is invisible without the right load
+— but here the missing ingredient is **concurrency**, not data volume. `/v1/manufacturer` is
+normally called by a *single* upstream thread (credit-card-order-service `WorkScheduler` loops over
+orders sequentially), so nothing ever contends. `comet-agents-playground/deploy/uc3-load/` runs a
+small curl Deployment that POSTs card orders **in parallel** (`PAR`, default 20) → ~`PAR-1` threads
+BLOCKED on the monitor at all times. Accepted throughput is self-limited by the lock hold
+(~`1000/FACTORY_SLOT_HOLD_MS`/s), so the enqueued work drains harmlessly on the normal
+`ManufactureScheduler` cadence and is not a memory signal. Dial contention via `PAR` (how many block)
+and `FACTORY_SLOT_HOLD_MS` (how long they wait).
+
+**Ground-truth catalog entry:**
+```yaml
+- id: UC3-lock-contention
+  activation:
+    mechanism: none               # always-on default behaviour (see §2.1)
+  service: third-party-service
+  runtime: java
+  root_cause:
+    file: src/third-party-service/src/main/java/com/dynatrace/easytrade/thirdpartyservice/FactoryProductionLine.java
+    symbol: FactoryProductionLine#reserveSlot        # the contended monitor
+    entry: ManufacturerController#issueCreditCard     # acquires it per request
+    trigger: POST /v1/manufacturer
+    mechanism: single global synchronized monitor held ~150 ms off-CPU per card; concurrent requests block on it (needs deploy/uc3-load for concurrency)
+  expected_signal:
+    profiling: off-CPU / lock analysis shows request threads BLOCKED entering the reserveSlot monitor; NOT a CPU hotspot
+    tracing: POST /v1/manufacturer response time high, dominated by wait, ~zero self-CPU
+    metric: third-party-service response time up while service CPU stays low
+  expected_dql: <query>
+  agent_answer_key:
+    service: third-party-service
+    method: FactoryProductionLine#reserveSlot
+    classification: lock-contention
+```
+
+## 7.3 UC10 (Java) — thread leak, end-to-end (implemented)
+
+Fourth defect built end-to-end, on `contentcreator`. The Java realization of UC10 (§3), and the
+thread/native-memory analogue of the UC2 heap leak.
+
+**The scenario.** Every steady-state one-minute pricing cycle generates a candle per instrument and
+"hands each off" to a background writer thread (`AsyncPricingWriter#submit`) that is supposed to
+flush it asynchronously and then exit.
+
+**The bug (root cause).** The writer never receives its flush signal — it parks forever
+(`awaitFlushSignal` → `LockSupport.park`) instead of returning. A **new** thread is created every
+cycle and **none are ever joined or reused** (no pool), so the live thread count climbs
+**monotonically** (`PRICING_WRITER_THREADS_PER_CYCLE`, default one per instrument ≈ 15/min). The fix
+is a bounded pool / actually completing the task, not more memory.
+
+**Why this is a *profiling* defect, and how it differs from its neighbours.** The distinguishing
+signal is **thread-state**: an ever-growing set of parked threads at one frame
+(`AsyncPricingWriter#awaitFlushSignal`), with **native memory (thread stacks) climbing while the
+Java heap stays flat**. That flat heap is exactly what separates UC10 from the UC2 **heap** leak; the
+*unbounded, monotonic* count is what separates it from UC4 **pool saturation** (bounded count, full
+queue). Eventually `OutOfMemoryError: unable to create native thread` (or a cgroup OOM-kill from
+RSS); the JVM runs `-XX:+ExitOnOutOfMemoryError` so the pod restarts into a sawtooth like UC2.
+
+**Making it manifest (no driver needed).** `contentcreator` is a background loop with no HTTP
+surface, so the leak is **load-independent** — it climbs on the fixed one-minute cadence regardless
+of frontend traffic. The startup back-fill path deliberately does **not** leak, so the growth is a
+clean steady climb from process start. Intensity is tuned at the source via
+`PRICING_WRITER_THREADS_PER_CYCLE`.
+
+**Ground-truth catalog entry:**
+```yaml
+- id: UC10-thread-leak
+  activation:
+    mechanism: none               # always-on default behaviour (see §2.1)
+  service: contentcreator
+  runtime: java
+  root_cause:
+    file: src/contentcreator/src/main/java/com/dynatrace/easytrade/contentcreator/AsyncPricingWriter.java
+    symbol: AsyncPricingWriter#submit                 # creates the never-joined threads
+    parked_frame: AsyncPricingWriter#awaitFlushSignal  # where leaked threads park forever
+    trigger: steady-state one-minute pricing cycle (ContentCreator#spawnAsyncPricingWriters)
+    mechanism: per-cycle new Thread that parks forever (LockSupport.park), never joined/pooled → monotonic thread + native-memory growth
+  expected_signal:
+    profiling: thread-state profiling shows an ever-growing set of parked threads at AsyncPricingWriter#awaitFlushSignal
+    metric: JVM thread count and RSS/native memory climb monotonically while JVM HEAP stays FLAT; sawtooth as the pod OOM-restarts
+  expected_dql: <query>
+  agent_answer_key:
+    service: contentcreator
+    method: AsyncPricingWriter#submit
+    classification: thread-leak
+```
+
 ## 8. Next steps (post-prototype)
 
 1. ✅ UC2 built end-to-end in `accountservice`, always-on (§7). Post-mortem: the leak must live on a
@@ -532,4 +668,12 @@ the full `O(n²)` → a sustained CPU hotspot. Dial CPU via the seed size and th
    isolation (§6 Q4). Sequence by disambiguation value: wait/CPU defects first (UC3, UC11), then the
    leak/churn pairs (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9) — tune
    intensity at the source/dataset level, not a runtime toggle.
+   - ✅ **UC3** (lock contention) built end-to-end in `third-party-service` (§7.2), always-on.
+     Manifests only under concurrency — supplied by `deploy/uc3-load/` (the wait-defect analogue of
+     UC1's data/load requirement). Host constraint learned: the two busy request-driven Java hosts
+     were taken, so UC3 reuses a real endpoint + a dedicated concurrent driver (one defect per
+     service).
+   - ✅ **UC10** (thread leak) built end-to-end in `contentcreator` (§7.3), always-on and
+     **load-independent** (background loop). Pairs with UC2 (heap leak) as the native/thread analogue.
+   - Remaining: UC4, UC5, UC6, UC8, UC9, UC11.
 6. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.

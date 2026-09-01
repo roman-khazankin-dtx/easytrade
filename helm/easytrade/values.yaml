@@ -90,6 +90,14 @@ calculationservice:
 
 contentcreator:
   enabled: true
+  env:
+    # UC10 thread leak: writer threads leaked per one-minute pricing cycle
+    # (default in code is one per instrument, ~15). Tune the leak rate here.
+    PRICING_WRITER_THREADS_PER_CYCLE: "15"
+    # PreserveFramePointer aids profiling; ExitOnOutOfMemoryError makes the JVM
+    # terminate on OOM (UC10: unable to create native thread) so K8s restarts the
+    # pod promptly, giving a sawtooth on top of the monotonic thread-count climb.
+    JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer -XX:+ExitOnOutOfMemoryError"
   envFromSecret:
     MSSQL_CONNECTIONSTRING:
       name: "{{ .Release.Name }}-connection-strings"
@@ -389,6 +397,12 @@ third-party-service:
     COURIER_RATE: "900"
     MANUFACTURE_DELAY: "500"
     MANUFACTURE_RATE: "900"
+    # UC3 lock contention: how long the single global production line is held per
+    # card (off-CPU). Longer hold => more request threads blocked on the monitor
+    # at once. Contention only manifests under concurrent load (see deploy/uc3-load).
+    FACTORY_SLOT_HOLD_MS: "150"
+    # PreserveFramePointer aids profiling frame accuracy for the off-CPU / lock analysis.
+    JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer"
     FEATURE_FLAG_SERVICE_PROTOCOL: http
     FEATURE_FLAG_SERVICE_BASE_URL: "{{ .Release.Name }}-feature-flag-service"
     FEATURE_FLAG_SERVICE_PORT: "8080"

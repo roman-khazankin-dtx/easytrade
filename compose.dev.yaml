@@ -34,6 +34,8 @@ services:
       - db
     environment:
       MSSQL_CONNECTIONSTRING: *java-connection-string
+      # UC10 thread leak: writer threads leaked per one-minute pricing cycle.
+      PRICING_WRITER_THREADS_PER_CYCLE: 15
 
   manager:
     <<: *default-service
@@ -215,6 +217,8 @@ services:
       COURIER_RATE: 10
       MANUFACTURE_DELAY: 10
       MANUFACTURE_RATE: 10
+      # UC3 lock contention: hold time of the single global production line per card.
+      FACTORY_SLOT_HOLD_MS: 150
 
   feature-flag-service:
     <<: *default-service

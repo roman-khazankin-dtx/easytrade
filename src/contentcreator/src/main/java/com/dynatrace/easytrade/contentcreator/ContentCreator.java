@@ -174,6 +174,40 @@ public class ContentCreator {
         LOGGER.info("Generating and inserting pricing data for time [{}] ", dateFormatter.format(calendar.getTime()));
         List<Pricing> pricingData = generateAllPricingForGivenDate(calendar.getTime(), generator);
         connector.insertBatchData(SQLTables.PRICING, Collections.unmodifiableList(pricingData), BATCH_SIZE);
+
+        // UC10 thread leak: hand each freshly generated candle off to a background
+        // writer that is meant to flush and exit, but never does (see
+        // AsyncPricingWriter). Only the steady-state one-minute cycle leaks — the
+        // startup back-fill deliberately does not, so growth is a steady climb.
+        spawnAsyncPricingWriters(pricingData);
+    }
+
+    /**
+     * Leak one never-terminating writer thread per candle this cycle. The count
+     * defaults to one per instrument (~15/min); override with
+     * PRICING_WRITER_THREADS_PER_CYCLE to tune how fast the thread count and
+     * native memory climb.
+     */
+    private static void spawnAsyncPricingWriters(List<Pricing> pricingData) {
+        if (pricingData.isEmpty()) {
+            return;
+        }
+        int count = writersPerCycle(pricingData.size());
+        for (int i = 0; i < count; i++) {
+            AsyncPricingWriter.submit(pricingData.get(i % pricingData.size()));
+        }
+    }
+
+    private static int writersPerCycle(int candleCount) {
+        String raw = System.getenv("PRICING_WRITER_THREADS_PER_CYCLE");
+        if (raw != null && !raw.isBlank()) {
+            try {
+                return Math.max(0, Integer.parseInt(raw.trim()));
+            } catch (NumberFormatException e) {
+                LOGGER.warn("Invalid PRICING_WRITER_THREADS_PER_CYCLE '{}', defaulting to one per candle", raw);
+            }
+        }
+        return candleCount;
     }
 
     private static void removeOldPricingData(SQLDatabaseConnector connector, SimpleDateFormat dateFormatter) {
