@@ -4,92 +4,101 @@ SET NOCOUNT ON;
 GO
 
 -- =========================================================================
--- Seed a large credit-card order history.
+-- UC1 seed — credit-card ballast that makes OrdersOverview#build a CPU hotspot.
 --
--- Purpose: give credit-card-order-service's OrdersOverview#build a non-trivial
--- dataset. That method scans EVERY order x EVERY status row system-wide, so
--- these rows inflate the cost of every GET /v1/orders/{accountId}/status call
--- (the cache is defeated on every write, so the overview is rebuilt each time).
--- Without this seed the tables start empty and the O(n^2) recompute is
--- microseconds, so the CPU hotspot never shows.
+-- credit-card-order-service caches an O(orders x statuses) OrdersOverview but
+-- invalidates it on every status write, so GET /v1/orders/{accountId}/status
+-- rebuilds it on every request. This seed supplies the data VOLUME that makes
+-- each rebuild expensive; deploy/uc1-load/uc1-driver supplies the continuous
+-- invalidation. Miss either and there is no visible hotspot (that is exactly
+-- what makes "profiling look inactive").
 --
--- The orders hang off dedicated synthetic accounts (Origin = 'SEED_CCORDER')
--- that loadgen never logs into, so the dataset is stable: loadgen revoking a
--- real user's card deletes only that user's orders, never these.
+-- Shape — MUST match the uc1-driver contract (deploy/uc1-load/uc1-driver.yaml):
+--   * @N ballast accounts at FIXED Ids 100001.. (well above loadgen's 1..~290),
+--     Origin = 'SEED_CCORDER' so loadgen never logs in and cannot erode them.
+--   * EXACTLY ONE order per ballast account. The driver's DELETE step calls
+--     deleteOrderForAccountId, which 500s with >1 order/account — never pile
+--     multiple orders onto a single ballast account.
+--   * ~5 lifecycle statuses per order -> larger O(N^2) scan inside build().
 --
--- Tuning knobs (build() cost ~= totalOrders * totalStatuses):
---   @synthAccounts    number of dedicated seed accounts
---   @ordersPerAccount orders per seed account
--- Default 300 * 10 = 3000 orders x 5 statuses = 15000 status rows
---   -> OrdersOverview#build ~= 3000 * 15000 = 45M iterations per recompute
---   (~30-60ms of CPU per GET /status on a throttled container).
--- Raise the knobs to make the hotspot burn more CPU; lower them if the pod
--- gets CPU-starved to the point of failing health checks.
+-- Idempotent: the NOT EXISTS guards make re-runs a no-op, so run-initialization.sh
+-- can (and does) run this on EVERY DB boot. That is what self-heals the ballast
+-- after any db-0 reschedule/reset (the StatefulSet's data is persisted, but this
+-- also re-establishes the ballast on a fresh volume with no manual seed step).
+--
+-- Tuning: @N ~= 5000 gives a clear, gradeable hotspot; N < ~1000 is invisible.
+-- Raise @N to burn more CPU; lower it if the pod gets CPU-starved to the point
+-- of failing health checks.
 -- =========================================================================
 
-DECLARE @synthAccounts    INT = 300;
-DECLARE @ordersPerAccount INT = 10;
-DECLARE @totalOrders      INT = @synthAccounts * @ordersPerAccount;
+DECLARE @N  INT = 5000;      -- number of ballast accounts / orders
+DECLARE @lo INT = 100001;    -- first ballast account Id (well above loadgen's range)
 
--- 1) dedicated synthetic accounts (never used by loadgen)
-;WITH n AS (
-    SELECT TOP (@synthAccounts) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
+-------------------------------------------------------------------------------
+-- 1) Ballast accounts (identity insert; only the ones still missing)
+-------------------------------------------------------------------------------
+SET IDENTITY_INSERT [dbo].[Accounts] ON;
+;WITH nums AS (
+    SELECT TOP (@N) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS i
     FROM sys.all_objects a CROSS JOIN sys.all_objects b
 )
 INSERT INTO [dbo].[Accounts]
-    ([PackageId],[FirstName],[LastName],[Username],[Email],[HashedPassword],
+    ([Id],[PackageId],[FirstName],[LastName],[Username],[Email],[HashedPassword],
      [Origin],[CreationDate],[PackageActivationDate],[AccountActive],[Address])
 SELECT
-    1,
-    'Seed',
-    'CardHistory ' + CAST(rn AS varchar(10)),
-    'seed_ccorder_' + CAST(rn AS varchar(10)),
-    'seed_ccorder_' + CAST(rn AS varchar(10)) + '@example.invalid',
-    'x',
+    @lo + i,
+    1,                                                      -- valid PackageId (Starter)
+    'Ballast',
+    'Acct' + CAST(@lo + i AS varchar(10)),
+    'ballast' + CAST(@lo + i AS varchar(10)),               -- unique Username
+    'b' + CAST(@lo + i AS varchar(10)) + '@example.invalid',-- unique Email
+    'x',                                                    -- HashedPassword (never logs in)
     'SEED_CCORDER',
-    '2023-01-01 00:00:00',
-    '2023-01-01 00:00:00',
-    1,
-    'Seed address'
-FROM n;
+    '2023-01-01 00:00:00', '2023-01-01 00:00:00', 1,
+    '1 Main St'
+FROM nums
+WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Accounts] x WHERE x.[Id] = @lo + i);
+SET IDENTITY_INSERT [dbo].[Accounts] OFF;
 
--- 2) orders spread round-robin across the synthetic accounts
-;WITH acct AS (
-    SELECT [Id], ROW_NUMBER() OVER (ORDER BY [Id]) AS rn
-    FROM [dbo].[Accounts] WHERE [Origin] = 'SEED_CCORDER'
-),
-ord AS (
-    SELECT TOP (@totalOrders) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn
-    FROM sys.all_objects a CROSS JOIN sys.all_objects b
-)
+-------------------------------------------------------------------------------
+-- 2) Exactly one CreditCardOrders row per ballast account (Id = GUID string)
+-------------------------------------------------------------------------------
 INSERT INTO [dbo].[CreditCardOrders]
-    ([Id],[AccountId],[Email],[Name],[ShippingAddress],[CardLevel])
+    ([Id],[AccountId],[Email],[Name],[ShippingId],[ShippingAddress],[CardLevel])
 SELECT
-    LOWER(CAST(NEWID() AS nvarchar(36))),
+    LOWER(CONVERT(varchar(36), NEWID())),
     a.[Id],
-    'seed@example.invalid',
-    'Seed order ' + CAST(o.rn AS varchar(10)),
-    'Seed address',
-    'silver'
-FROM ord o
-JOIN acct a ON a.rn = ((o.rn - 1) % @synthAccounts) + 1;
+    'b' + CAST(a.[Id] AS varchar(10)) + '@example.invalid',
+    'Ballast ' + CAST(a.[Id] AS varchar(10)),
+    NULL,
+    '1 Main St',
+    CASE a.[Id] % 3 WHEN 0 THEN 'silver' WHEN 1 THEN 'gold' ELSE 'platinum' END
+FROM [dbo].[Accounts] a
+WHERE a.[Id] BETWEEN @lo AND @lo + @N - 1
+  AND NOT EXISTS (SELECT 1 FROM [dbo].[CreditCardOrders] o WHERE o.[AccountId] = a.[Id]);
 
--- 3) full 5-step lifecycle history for every seeded order
+-------------------------------------------------------------------------------
+-- 3) Full 5-step lifecycle history per ballast order (Id is IDENTITY -> omit it).
+--    More statuses per order => larger O(orders x statuses) scan in build().
+-------------------------------------------------------------------------------
 INSERT INTO [dbo].[CreditCardOrderStatus]
     ([CreditCardOrderId],[Timestamp],[Status],[Details])
 SELECT
-    co.[Id],
+    o.[Id],
     DATEADD(MINUTE, s.seq, CAST('2023-01-01T00:00:00+00:00' AS datetimeoffset(0))),
     s.status,
-    'seed'
-FROM [dbo].[CreditCardOrders] co
-JOIN [dbo].[Accounts] ac
-    ON ac.[Id] = co.[AccountId] AND ac.[Origin] = 'SEED_CCORDER'
-CROSS JOIN (VALUES
+    NULL
+FROM [dbo].[CreditCardOrders] o
+JOIN [dbo].[Accounts] a
+      ON a.[Id] = o.[AccountId] AND a.[Id] BETWEEN @lo AND @lo + @N - 1
+CROSS APPLY (VALUES
     (0, 'order_created'),
     (1, 'card_ordered'),
     (2, 'card_created'),
     (3, 'card_shipped'),
     (4, 'card_delivered')
-) AS s(seq, status);
+) AS s(seq, status)
+WHERE NOT EXISTS (
+    SELECT 1 FROM [dbo].[CreditCardOrderStatus] st WHERE st.[CreditCardOrderId] = o.[Id]
+);
 GO
