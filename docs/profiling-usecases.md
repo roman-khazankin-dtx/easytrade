@@ -1,89 +1,32 @@
-# Agentic Profiling Workstream (DRAFT)
+# EasyTrade Profiling Eval — Use Cases & Injected Defects (DRAFT)
 
-> Status: **draft for discussion** · Owner: Roman Khazankin · Last updated: 2026-08-21
+> Status: **draft for discussion** · Owner: Roman Khazankin · Last updated: 2026-09-08
 
-> **Repo / contribution note:** this workstream lives on the **fork**
+> **What this file is.** The **use-case catalog** for the agentic profiling eval: the profiling
+> defects injected into this EasyTrade fork (UC1–UC12), which service hosts each, and the
+> end-to-end ground truth for the ones already built. The defects live in *this* repo's service
+> code; this doc documents them.
+>
+> **The strategy lives elsewhere.** Motivation, the always-on / no-activation philosophy, the
+> EasyTrade-candidacy analysis, coverage rationale, open questions and next steps are in the
+> **eval-runner** repo: `comet-agents-playground/docs/agentic-profiling-workstream.md`. The two
+> files were one document and **share one section-numbering scheme** — this file holds **§3, §5,
+> §7**; a `§`-reference to any section not here (e.g. §2.1 no-activation, §6 Q4 per-scenario
+> isolation) points into that strategy doc.
+>
+> **Machine-readable ground truth** (authoritative for grading) is `evals/ground-truth.yaml` in the
+> playground repo; the YAML blocks below are the human-readable source it syncs from.
+
+> **Repo / contribution note:** the defects live on this **fork**
 > (github.com/roman-khazankin-dtx/easytrade). We will **not** open pull requests to `origin` (the
-> upstream Dynatrace EasyTrade). The profiling defects are a private eval fixture and are not meant
-> to be upstreamed into the public demo app — commit and push to fork branches only. See §6 Q5.
-
-## 1. Motivation & Goal
-
-We want a **single, always-on demo application** that:
-
-1. Runs continuously and is monitored by Dynatrace (including **continuous / code-level profiling**).
-2. Deliberately **exhibits profiling-relevant defects** — CPU hotspots, memory leaks, lock
-   contention, thread-pool exhaustion, GC pressure, inefficient I/O — in a controllable way.
-3. Serves as a **shared fixture for two workstreams at once**:
-   - **Agentic eval** — a reproducible, ground-truth environment to score how well an AI agent
-     investigates and diagnoses profiling problems against a live Dynatrace tenant.
-   - **Profiling app validation** — a realistic, continuous exerciser of the profiling product
-     itself (ingestion, symbolication, flamegraphs, service/process attribution, diffing).
-
-The key property we need is **ground truth we control**: for every injected defect we know the
-root-cause method / allocation site / lock, so we can objectively grade an agent's diagnosis and
-confirm the profiling product surfaces the right frames.
-
-## 2. What "good" looks like
-
-- Each defect is **always-on** (baked into the service's default behaviour) with **no activation
-  flag or env var** — there is nothing to arm and nothing to discover from the running app (see
-  §2.1). Intensity is tuned at the source/dataset level (e.g. UC1's seeded history), not a runtime
-  toggle.
-- Each defect stays **undiscoverable from the running app** — because there is no activation signal
-  at all, the agent must localize it from *profiling signal*, not from a flag or env var (see §2.1).
-- Each defect has a **documented ground-truth root cause** (service, file, symbol, expected
-  flamegraph signature).
-- Defects run against a **steady baseline of realistic traffic** so profiles are non-trivial and
-  the signal must be separated from normal work.
-- Defects are spread across **multiple runtimes** (JVM, Go, .NET, Node) so we exercise
-  language-specific profiling behavior and don't overfit the agent to one stack.
-- The whole thing is **deployable to K8s and monitored by a Dynatrace tenant** with profiling
-  enabled, and is stable enough to leave running for days.
-
-### 2.1 Activation: none (always-on, flag-free, env-free)
-
-**Principle: profiling defects carry NO activation mechanism — no `feature-flag-service` flag and
-no environment variable. Each defect is baked into the service's default behaviour and is always
-on.**
-
-The whole point of the agentic eval is to score whether an agent can *diagnose a defect from
-profiling signal*. If the agent can discover *that a defect is armed* from the running app, the eval
-measures nothing. We considered two activation mechanisms and rejected both:
-
-- **Feature flags — rejected.** EasyTrade's `feature-flag-service` advertises every flag through the
-  REST API (`GET /feature-flag-service/v1/flags?tag=problem_pattern`), the Swagger UI, and the
-  frontend `/feature-flags` page (name, description, ready-to-paste `curl`). A flag named
-  `memory_leak` described as *"…growing heap monotonically…"* hands the agent the answer key.
-  Feature flags stay appropriate for the **functional** problem patterns (`DbNotResponding`,
-  `FactoryCrisis`, …) that are *meant* to be demoed from the UI — they are wrong for a hidden
-  ground-truth eval.
-- **Env-var activation — also dropped.** An earlier version armed defects via a neutrally-named
-  private env var (e.g. UC2's `REQUEST_TRACE_RETENTION_ENABLED`). It removed the flag-plumbing cost,
-  but still leaves an arming signal an agent with cluster access (`kubectl get deploy -o yaml`) or a
-  tenant view of captured process env vars could read — and it is one more thing to get wrong (UC2
-  in fact shipped with the env var *unset* in Helm, so it never leaked; see §7). We dropped it.
-
-**No-activation contract for every profiling defect (UC1–UC11):**
-
-1. **Always-on.** The defect is default behaviour in the service code. There is no flag, no env var,
-   no runtime toggle — nothing to arm and therefore nothing to discover from the live app.
-2. **Scenarios do not overlap.** Each UC runs on its own isolated deployment (one scenario per
-   instance, §6 Q4), so an always-on defect never contaminates another scenario's profiles. This is
-   what removes the need for a clean, un-armed baseline from the same image.
-3. **Source code is a permitted oracle, the running app is not.** The agent may be granted the repo
-   to *propose a fix* — the defect living plainly in source is fine and intended. What the eval
-   tests is whether the agent localizes it from *profiling signal*, not from a flag or env var.
-
-Trade-off we accept: the same image cannot serve a clean baseline, and the defect is present in
-every deployment of that service on the fork. Both are fine under per-scenario isolation (§6 Q4). If
-we ever need several UCs live on one shared instance, we would reintroduce a concealed toggle then —
-out of scope for now.
+> upstream Dynatrace EasyTrade). They are a private eval fixture, not meant to be upstreamed —
+> commit and push to fork branches only. See strategy doc §6 Q5.
 
 ## 3. Proposed profiling use-cases (generic, product-agnostic)
 
-These are the eleven agentic profiling scenarios we consider most representative. For each we note
-the **profiling signal** it exercises and the **agent task** we'd score.
+These are the eleven agentic profiling defect scenarios (UC1–UC11) we consider most representative,
+plus a draft flamegraph-navigation capability (UC12). For each we note the **profiling signal** it
+exercises and the **agent task** we'd score.
 
 ### UC1 — CPU hotspot / inefficient algorithm ("on-CPU")
 A single method or call path burns a disproportionate share of CPU (e.g. an O(n²) loop, regex
@@ -223,6 +166,44 @@ computing.
   `HttpClient.send` results) can be replaced, always-on, by a spin-poll instead of a
   blocking call.
 
+### UC12 — Flamegraph navigation / frame localization (DRAFT)
+> Status: **draft for discussion.** Unlike UC1–UC11, this is **not a defect-diagnosis** scenario —
+> there is no injected root cause to name. It scores a more primitive **capability**: can the agent
+> (driving `dtctl`) *navigate the call tree itself* to locate a concrete frame that is **buried deep**
+> in the samples? It doubles as a **profiling-product validation** case (does the flamegraph surface,
+> subtree traversal, and reverse-caller lookup return the right frames?). It likely needs **no new
+> defect** — any existing UC deployment (or a plain easytrade service with several endpoints and deep
+> stacks) already has a rich enough tree to exercise.
+
+The motivating shape: a service exposes **multiple endpoints**, and deep inside **one** of them sits
+a frame we care about. The flamegraph is wide (many endpoints) and tall (deep stacks), so the target
+frame is a small box far from the root. We score whether the agent can find it and reason about its
+neighbourhood rather than eyeballing a picture.
+
+- **Signal:** on-CPU (or off-CPU) sampling with **deep, multi-endpoint call trees**; the frame of
+  interest is neither a dominant hotspot nor near a root — it is localized by *structure* (which
+  entrypoint it descends from, its parents/children), not by raw sample share.
+- **Agent task — three variants of increasing difficulty:**
+  - **(a) Known name.** We give the agent the fully-qualified frame (`Class#method`); it must locate
+    every occurrence in the tree, report where it sits (under which endpoint(s) / call path), and
+    quantify its share. Tests exact-match search + path reporting.
+  - **(b) Known entry, unknown target.** We give only a **starting point** — an endpoint or a partial
+    stacktrace — and a rough direction ("a couple of levels down from here"). The agent must **walk
+    the subtree** below that anchor, enumerate the children a level or two down, and surface the
+    frame(s) of interest without being told their names. Tests subtree traversal / drill-down, not
+    keyword lookup.
+  - **(c) Reverse lookup (callers).** Given a method, find **who calls it** — its callers (the
+    inverted/reverse view), across all endpoints, with each caller's contribution. Tests the
+    callers-of / reverse-flamegraph capability, distinct from the top-down descent of (a)/(b).
+- **Why it matters:** the other UCs assume the agent can already read a flamegraph; this one
+  isolates and grades that assumption. It also stresses the **`dtctl` profiling surface**
+  (`dtctl exec profile`) directly — frame search, subtree extraction, and caller inversion are the
+  primitives every other UC's investigation is built on, so a gap here caps performance everywhere.
+- **Open questions (draft):** which deployment hosts it (reuse an existing UC vs. a clean
+  multi-endpoint service); how ground truth is expressed (an exact frame + expected call path for
+  (a)/(c); an expected subtree/frame-set for (b)); and whether grading is exact-match or partial on
+  the reported path.
+
 > **Cross-cutting scenario (stretch): release regression / profile diff.** Ship a "slow" build,
 > let the agent compare before/after profiles to localize the regressed frame. This is arguably
 > the highest-value agentic use-case but depends on us running two builds; kept as a stretch goal.
@@ -235,91 +216,8 @@ computing.
 > **cache-defeat CPU hotspot** instead (§3 UC1, §5, §7.1), which produces an in-process CPU signal
 > that *only* a profiler can localize. UC7's id is retired; UC8–UC11 keep their numbers.
 
-**Coverage rationale:** the use-cases span the three profiling pillars and the "traps" where
-symptoms look alike in metrics but differ in the profile:
-- *on-CPU:* UC1 (business hotspot; incl. the cache-defeat variant), UC5 (GC symptom), UC8
-  (logging), UC9 (serialization), UC11 (spin that only *looks* on-CPU).
-- *allocation:* UC2 (retained leak), UC5 (churn), UC9 (marshalling allocation).
-- *off-CPU / wait:* UC3 (lock), UC4 (pool queue), UC6 (conditional cache miss),
-  UC10 (parked leaked threads).
-
-The set is built around **disambiguation pairs** that force the agent to reason, not pattern-match:
-UC2↔UC5 (leak vs. churn), UC4↔UC10 (pool saturation vs. thread leak), UC1↔UC11 (real compute vs.
-spin-wait), UC3↔UC6 (steady lock vs. intermittent tail), and
-UC1↔UC8↔UC9 (business CPU vs. logging vs. serialization). The Java UC1 adds a further twist —
-a *real* CPU hotspot whose true root cause is a **defeated cache**, not the hot loop itself. UC6
-additionally adds a **probabilistic/tail-latency** dimension the always-on defects lack.
-
-## 4. Is EasyTrade a good candidate to extend?
-
-**Preliminary verdict: yes — strong fit, with gaps to fill.** EasyTrade already gives us most of
-the scaffolding; what's missing is profiling-specific fault injection across runtimes.
-
-### 4.1 What EasyTrade already provides (pros)
-- **Multi-runtime by design** — 19 services across **Java 21 / Spring Boot, Go, .NET 8,
-  Node/TS**, plus a C++ calc service. Directly satisfies the "multiple runtimes" requirement so we
-  can exercise per-language profiling.
-- **Realistic, continuous traffic** — a dedicated **`loadgen`** service (Puppeteer/Chrome) replays
-  real browser journeys (deposit + buy/sell, long positions, credit-card orders) continuously,
-  with an **NYSE time-of-day load curve** (heavier during simulated market hours, `0.7×`
-  off-hours). Exactly the steady, non-trivial baseline we need — and the market-hours curve gives
-  us natural load variation to profile against.
-- **A clean, extensible fault-injection framework** (for the *functional* patterns — but see the
-  concealment caveat below and §2.1):
-  - **`feature-flag-service`** (Java) holds all flags as an **in-memory Spring bean map**
-    (`FeatureFlagConfig.java#flagRegistry()`), toggled over REST (`GET/PUT /v1/flags/{id}`).
-    Consumers read flags via the **OpenFeature SDK** with per-stack providers (.NET
-    `PluginManager` w/ 60s TTL cache; Java `JavaProvider`/`FeatureFlagClient`; Node
-    `EasyTradeProvider`). Adding a flag = one edit to `FeatureFlagConfig.java` +
-    `application.properties`, plus a per-service constant.
-    **⚠️ Not usable for profiling defects:** flags are advertised via REST, Swagger, and the
-    frontend `/feature-flags` page, which would reveal a defect to the investigating agent. See
-    §2.1 — profiling defects are always-on with no activation at all. The flag framework remains
-    the right tool for the demo-facing functional patterns.
-  - **`problem-operator`** (Go) is a pluggable k8s operator: on a 5s ticker it reconciles flags
-    against Deployment specs. Adding an operator-driven behavior = a new package in
-    `controllers/` + one `RegisterController(...)` line. (It reads the same flags, so it inherits
-    the same visibility caveat; it can still apply *k8s-spec* side effects like the CPU limit.)
-- **`HighCpuUsage` is already a profiling-shaped template.** In `broker-service` (.NET),
-  `HighCpuUsageMiddleware` spins N `Task.Run` workers running a tight Collatz busy-loop per
-  request, deliberately marked `[MethodImpl(NoInlining)]` **so it shows up in profiler call
-  trees**. The operator separately applies a `300m` CPU limit on K8s to force throttling. This is
-  the exact shape we generalize for UC1 and is the lowest-friction host for new patterns.
-- **Meaningful call graphs** — trades flow through proxy → multiple services → MSSQL and a
-  RabbitMQ queue (`pricing-service` → `calculationservice`). Real cross-service work means the
-  profiler has non-trivial stacks to attribute, and off-CPU/DB-wait scenarios are natural.
-- **Already Dynatrace-native** — K8s + Helm deployment, Monaco configs, documented DQL workflow.
-- **No arming step at all** — profiling defects are always-on default behaviour (§2.1). There is no
-  flag and no env var to set; deploying the service *is* arming it. Per-scenario isolation (§6 Q4)
-  keeps that from contaminating other scenarios.
-
-### 4.2 Gaps / what we'd need to add
-- **Only 1 of 4 existing patterns is truly profiling-shaped**, and two are *misleadingly named*:
-  - `HighCpuUsage` — ✅ real CPU busy-loop (our UC1 template).
-  - `DbNotResponding` — ❌ **not** a DB-latency fault; it corrupts a trade row (`Id = -1`) so
-    creation errors out. Pure logic fault.
-  - `FactoryCrisis` — ❌ **not** a memory leak despite the name; it forces every card to
-    `MANUFACTURE_ERROR`. Functional fault.
-  - `ErgoAggregatorSlowdown` — latency injection (`await delay(2000)` in `offerservice`) +
-    Go backoff. Availability/latency fault, no CPU/mem cost.
-  → We must **build new patterns for UC2–UC5** (leak, contention, pool exhaustion, GC pressure);
-  none exist today.
-- **Always-on activation needs no plumbing — this is a simplification.** Because profiling defects
-  are baked into the service's default behaviour (§2.1), we need neither OpenFeature providers nor
-  an env-var read. Any service — Go (`pricing-service`, `aggregator-service`) with zero flag
-  plumbing, or busy Java services (`engine`, `accountservice`) — can host a defect as a plain code
-  change. (UC2 went through an env-var stage and then dropped it entirely.)
-- **No intensity control / ground-truth catalog yet.** We need a documented mapping
-  `pattern → {service, file, symbol, expected flamegraph signature, expected DQL}` to grade the
-  agent objectively, plus a source/dataset-level intensity knob (rate/size).
-- **GC realism varies by runtime** — Go has no classic stop-the-world GC-pause story like the
-  JVM/.NET; pick per-runtime defects that are idiomatic (e.g. GC pressure → JVM/.NET, not Go).
-
-### 4.3 Complexity assessment
-The app is **complex enough**: 19 services, four language runtimes, a message queue, a shared
-database, and real multi-hop request flows under continuous synthetic load. That is more than
-enough surface to host all eleven use-cases realistically and to make the agent's job non-trivial
-(it must localize a defect within a real, noisy distributed system rather than a toy).
+> The **coverage rationale** and **disambiguation pairs** that explain *why this set* was chosen
+> live in the strategy doc (playground), since they argue the design rather than document a defect.
 
 ## 5. Proposed defect → service mapping (first cut)
 
@@ -387,28 +285,6 @@ decision driven by which service gives the cleanest signal under load.
   replaced the earlier UC7 idea on this host — it makes the CPU-hotspot task harder (real hot frame,
   but the root cause is a defeated cache) and gives an in-process signal that, unlike a chatty-DB
   N+1, cannot be diagnosed from traces alone.
-
-## 6. Open questions
-
-1. **Which Dynatrace tenant(s)** host this, and is continuous profiling enabled there today?
-2. **Eval harness** — does agentic-eval already have a runner we plug into, or do we build the
-   deploy → wait → query-tenant → grade loop from scratch? (No arm/disarm step — defects are
-   always-on, §2.1.)
-3. **Ground-truth grading** — score on "named the right service", "named the right method", or a
-   rubric? Who owns the answer key?
-4. ~~**One app instance or per-scenario instances?**~~ **Resolved: per-scenario, non-overlapping.**
-   Each UC runs on its own isolated deployment so scenarios never contaminate each other's profiles.
-   This is what lets defects stay **flag-free / always-on** (no arm/disarm lifecycle needed on a
-   shared instance) — see the §7.1 note. Revisit only if we ever need several UCs live at once on one
-   instance.
-5. ~~**Do we upstream these patterns** into the public EasyTrade?~~ **Resolved: no.** We keep a
-   profiling-specific **fork** and do **not** open PRs to `origin` — these eval defects don't
-   belong in the public demo app (see the repo/contribution note at the top).
-6. ~~**UC2 target service**~~ **Resolved:** UC2 is implemented in `accountservice`, always-on
-   (§2.1, §5, §7), on the trafficked `AccountControllerV2` / `/accounts/{id}` endpoint.
-7. ~~**Is env-var concealment strong enough** for the eval's threat model?~~ **Resolved:**
-   activation was dropped entirely (§2.1) — defects are always-on, so there is no arming variable to
-   read. The remaining exposure is that the defect lives in source, which is a permitted oracle.
 
 ## 7. Prototype — UC2 memory leak, end-to-end (implemented)
 
@@ -651,29 +527,3 @@ clean steady climb from process start. Intensity is tuned at the source via
     method: AsyncPricingWriter#submit
     classification: thread-leak
 ```
-
-## 8. Next steps (post-prototype)
-
-1. ✅ UC2 built end-to-end in `accountservice`, always-on (§7). Post-mortem: the leak must live on a
-   trafficked endpoint (`AccountControllerV2` / `/accounts/{id}`), not the dead `/account/{id}`.
-2. ✅ UC1 (Java) cache-defeat CPU hotspot built end-to-end in `credit-card-order-service` (§7.1),
-   always-on. Note the load requirements: the seeded dataset and the loadgen status-view traffic are
-   what make it burn CPU (see §7.1).
-3. Confirm the tenant has continuous profiling enabled; wire the deploy→wait→query→grade harness (no
-   arm/disarm step — defects are always-on, §2.1).
-4. Standardize the ground-truth catalog; backfill for the .NET UC1 (existing `HighCpuUsage`) — and
-   migrate it off its `high_cpu_usage` flag so it isn't self-disclosing either. The Java UC1 (§7.1)
-   is already always-on.
-5. Roll out UC3–UC6, UC8–UC11 on **Java services** (§5), all **always-on** (§2.1) under per-scenario
-   isolation (§6 Q4). Sequence by disambiguation value: wait/CPU defects first (UC3, UC11), then the
-   leak/churn pairs (UC5, UC10), then the intensity-tunable ones (UC6 miss-rate, UC8/UC9) — tune
-   intensity at the source/dataset level, not a runtime toggle.
-   - ✅ **UC3** (lock contention) built end-to-end in `third-party-service` (§7.2), always-on.
-     Manifests only under concurrency — supplied by `deploy/uc3-load/` (the wait-defect analogue of
-     UC1's data/load requirement). Host constraint learned: the two busy request-driven Java hosts
-     were taken, so UC3 reuses a real endpoint + a dedicated concurrent driver (one defect per
-     service).
-   - ✅ **UC10** (thread leak) built end-to-end in `contentcreator` (§7.3), always-on and
-     **load-independent** (background loop). Pairs with UC2 (heap leak) as the native/thread analogue.
-   - Remaining: UC4, UC5, UC6, UC8, UC9, UC11.
-6. ✅ Upstream-vs-fork decided (§6 Q5): stay on the **fork**, no PRs to `origin`.
