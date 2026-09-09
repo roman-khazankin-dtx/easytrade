@@ -15,10 +15,10 @@ import org.springframework.web.bind.annotation.*;
 @CrossOrigin
 public class ManufacturerController {
     private static final Logger logger = LoggerFactory.getLogger(ManufacturerController.class);
-    private final FactoryProductionLine productionLine;
+    private final LegacyMainframeBridge mainframeBridge;
 
-    public ManufacturerController(FactoryProductionLine productionLine) {
-        this.productionLine = productionLine;
+    public ManufacturerController(LegacyMainframeBridge mainframeBridge) {
+        this.mainframeBridge = mainframeBridge;
     }
 
     @PostMapping("")
@@ -26,11 +26,11 @@ public class ManufacturerController {
     public ResponseEntity<StandardResponse> issueCreditCard(@RequestBody CreditCardRequest request) {
         logger.info("Starting to issue a credit card for data: " + request);
 
-        // UC3 lock contention: reserve the single global production line before
-        // accepting the order. Under concurrent load, request threads block here
-        // on one monitor (off-CPU wait), while CPU stays idle. See
-        // FactoryProductionLine.
-        productionLine.reserveSlot();
+        // UC3 lock contention: hand the order to the single global legacy mainframe
+        // channel before accepting it. Under concurrent load, request threads block
+        // here on one monitor (off-CPU wait), while CPU stays idle. See
+        // LegacyMainframeBridge.
+        mainframeBridge.transmit();
 
         ManufactureScheduler.addProcess(new ManufactureProcess(request));
 

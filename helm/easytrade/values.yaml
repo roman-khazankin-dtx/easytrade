@@ -397,10 +397,10 @@ third-party-service:
     COURIER_RATE: "900"
     MANUFACTURE_DELAY: "500"
     MANUFACTURE_RATE: "900"
-    # UC3 lock contention: how long the single global production line is held per
-    # card (off-CPU). Longer hold => more request threads blocked on the monitor
-    # at once. Contention only manifests under concurrent load (see deploy/uc3-load).
-    FACTORY_SLOT_HOLD_MS: "150"
+    # UC3 lock contention: how long the single global legacy mainframe channel is
+    # held per card (off-CPU). Longer hold => more request threads blocked on the
+    # monitor at once. Contention only manifests under concurrent load (see deploy/uc3-load).
+    MAINFRAME_TX_HOLD_MS: "150"
     # PreserveFramePointer aids profiling frame accuracy for the off-CPU / lock analysis.
     JAVA_TOOL_OPTIONS: "-XX:+PreserveFramePointer"
     FEATURE_FLAG_SERVICE_PROTOCOL: http

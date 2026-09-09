@@ -217,8 +217,8 @@ services:
       COURIER_RATE: 10
       MANUFACTURE_DELAY: 10
       MANUFACTURE_RATE: 10
-      # UC3 lock contention: hold time of the single global production line per card.
-      FACTORY_SLOT_HOLD_MS: 150
+      # UC3 lock contention: hold time of the single global legacy mainframe channel per card.
+      MAINFRAME_TX_HOLD_MS: 150
 
   feature-flag-service:
     <<: *default-service

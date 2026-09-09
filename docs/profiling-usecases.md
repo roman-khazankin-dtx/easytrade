@@ -62,10 +62,10 @@ section, or a slow downstream/DB call.
 - **Signal:** off-CPU / wait profiling; latency high but CPU low; blocked-thread stacks.
 - **Agent task:** recognize the "slow but not CPU-bound" pattern, identify the contended
   monitor / blocking call site, and separate lock-wait from I/O-wait.
-- **Realization (Java, ✅ implemented):** `third-party-service` — a single global "production
-  line" monitor (`FactoryProductionLine#reserveSlot`, `synchronized`) that
+- **Realization (Java, ✅ implemented):** `third-party-service` — a single global legacy
+  mainframe-channel monitor (`LegacyMainframeBridge#transmit`, `synchronized`) that
   `ManufacturerController#issueCreditCard` must acquire before accepting each card order, held for
-  an off-CPU interval (`FACTORY_SLOT_HOLD_MS`, default 150 ms). Under concurrent load, request
+  an off-CPU interval (`MAINFRAME_TX_HOLD_MS`, default 150 ms). Under concurrent load, request
   threads pile up **BLOCKED** on the one monitor while CPU stays idle. Because `/v1/manufacturer`
   is normally driven by a *single* upstream scheduler thread (credit-card-order-service
   `WorkScheduler`), the contention only manifests under a concurrent driver — see §7.2.
@@ -238,7 +238,7 @@ decision driven by which service gives the cleanest signal under load.
 | UC1 CPU hotspot (.NET) | .NET | `broker-service` (existing `HighCpuUsage`) | planned | Add a second always-on hot path (regex backtracking / expensive serialization) beside the Collatz loop |
 | UC1 CPU hotspot (Java, cache-defeat) | Java | `credit-card-order-service` | ✅ implemented | Expensive `O(n²)` `OrdersOverview#build` meant to be cached, but invalidated on every status write (`OrderController`, `WorkScheduler`) → never warm → rebuild runs on every `GET /v1/orders/{id}/status`. **Always-on (no env gate)** — see §7.1 |
 | UC2 Memory leak | Java | `accountservice` | ✅ implemented | always-on `static` collection (`AccountControllerV2`) that grows 256 KB per `GET /accounts/{id}` and is never freed; JVM `-XX:+ExitOnOutOfMemoryError` restarts the pod on OOM |
-| UC3 Lock contention | Java | `third-party-service` | ✅ implemented | always-on single global `synchronized` monitor (`FactoryProductionLine#reserveSlot`) acquired per card order (`issueCreditCard`), held off-CPU (`FACTORY_SLOT_HOLD_MS`) → concurrent request threads block, CPU idle. Needs a concurrent driver to manifest (§7.2) |
+| UC3 Lock contention | Java | `third-party-service` | ✅ implemented | always-on single global `synchronized` monitor (`LegacyMainframeBridge#transmit`) acquired per card order (`issueCreditCard`), held off-CPU (`MAINFRAME_TX_HOLD_MS`) → concurrent request threads block, CPU idle. Needs a concurrent driver to manifest (§7.2) |
 | UC4 Thread-pool exhaustion | Java | TBD | planned | always-on bounded `ExecutorService` (or constrained worker pool) that holds/leaks threads → requests queue |
 | UC5 GC / alloc churn | Java | TBD | planned | always-on high-allocation path emitting many short-lived objects → high alloc rate + GC pauses |
 | UC6 Conditional cache-miss wait | Java | TBD | planned | always-on cache with a tunable miss rate (~5%); missed requests fall back to a slow downstream/DB load → intermittent off-CPU/net-IO wait on the tail |
@@ -268,7 +268,7 @@ decision driven by which service gives the cleanest signal under load.
   grading). Among the free Java services none does heavy *synchronous request* work — so UC3 landed
   on `third-party-service`'s real `issueCreditCard` endpoint and the required **concurrency is
   supplied by a dedicated driver** (`deploy/uc3-load/`), exactly as UC1 needed `uc1-load`. The lock
-  holder is off-CPU (a bounded sleep = the production line's cycle time), so the graded signal is
+  holder is off-CPU (a bounded sleep = the mainframe channel's round-trip cycle), so the graded signal is
   request threads **BLOCKED on the monitor**, not CPU. See §7.2.
 - **UC10 host resolved: `contentcreator`.** A background per-minute loop, so the thread leak is
   **load-independent** and monotonic (the safest signal against the load-dependency failure mode
@@ -425,11 +425,11 @@ the full `O(n²)` → a sustained CPU hotspot. Dial CPU via the seed size and th
 
 Third defect built end-to-end, on `third-party-service`. The Java realization of UC3 (§3).
 
-**The scenario.** A single physical "production line" can manufacture only one credit card at a
-time. It is modelled as one global monitor — `FactoryProductionLine#reserveSlot`, a `synchronized`
-method on a singleton bean — that `ManufacturerController#issueCreditCard` must acquire before
-accepting each order. The critical section is held for `FACTORY_SLOT_HOLD_MS` (default 150 ms) of
-**off-CPU** time (a bounded sleep = the machine's fixed cycle time).
+**The scenario.** Card issuance must hand every order to a single legacy mainframe channel that can
+transmit only one order at a time. It is modelled as one global monitor — `LegacyMainframeBridge#transmit`,
+a `synchronized` method on a singleton bean — that `ManufacturerController#issueCreditCard` must
+acquire before accepting each order. The critical section is held for `MAINFRAME_TX_HOLD_MS`
+(default 150 ms) of **off-CPU** time (a bounded sleep = the mainframe's fixed round-trip cycle).
 
 **The bug (root cause).** Serializing *all* card issuance through one coarse monitor. Under
 concurrent orders, only one thread holds the line while the rest sit **BLOCKED** on the monitor —
@@ -439,7 +439,7 @@ not "more CPU".
 **Why this is a *profiling* defect.** The slow requests do no CPU work and make no downstream call
 while blocked, so a CPU flamegraph is flat and a trace shows a slow span with nothing inside it. The
 only way to localize it is **off-CPU / lock (monitor) analysis**, which attributes the wait to the
-`reserveSlot` monitor with threads in the BLOCKED state — the exact signal that distinguishes UC3
+`transmit` monitor with threads in the BLOCKED state — the exact signal that distinguishes UC3
 (lock-wait) from UC1 (genuine compute) and from a per-request I/O wait.
 
 **Making it manifest (load requirement).** Like UC1, the defect is invisible without the right load
@@ -448,9 +448,9 @@ normally called by a *single* upstream thread (credit-card-order-service `WorkSc
 orders sequentially), so nothing ever contends. `comet-agents-playground/deploy/uc3-load/` runs a
 small curl Deployment that POSTs card orders **in parallel** (`PAR`, default 20) → ~`PAR-1` threads
 BLOCKED on the monitor at all times. Accepted throughput is self-limited by the lock hold
-(~`1000/FACTORY_SLOT_HOLD_MS`/s), so the enqueued work drains harmlessly on the normal
+(~`1000/MAINFRAME_TX_HOLD_MS`/s), so the enqueued work drains harmlessly on the normal
 `ManufactureScheduler` cadence and is not a memory signal. Dial contention via `PAR` (how many block)
-and `FACTORY_SLOT_HOLD_MS` (how long they wait).
+and `MAINFRAME_TX_HOLD_MS` (how long they wait).
 
 **Ground-truth catalog entry:**
 ```yaml
@@ -460,19 +460,19 @@ and `FACTORY_SLOT_HOLD_MS` (how long they wait).
   service: third-party-service
   runtime: java
   root_cause:
-    file: src/third-party-service/src/main/java/com/dynatrace/easytrade/thirdpartyservice/FactoryProductionLine.java
-    symbol: FactoryProductionLine#reserveSlot        # the contended monitor
+    file: src/third-party-service/src/main/java/com/dynatrace/easytrade/thirdpartyservice/LegacyMainframeBridge.java
+    symbol: LegacyMainframeBridge#transmit        # the contended monitor
     entry: ManufacturerController#issueCreditCard     # acquires it per request
     trigger: POST /v1/manufacturer
     mechanism: single global synchronized monitor held ~150 ms off-CPU per card; concurrent requests block on it (needs deploy/uc3-load for concurrency)
   expected_signal:
-    profiling: off-CPU / lock analysis shows request threads BLOCKED entering the reserveSlot monitor; NOT a CPU hotspot
+    profiling: off-CPU / lock analysis shows request threads BLOCKED entering the transmit monitor; NOT a CPU hotspot
     tracing: POST /v1/manufacturer response time high, dominated by wait, ~zero self-CPU
     metric: third-party-service response time up while service CPU stays low
   expected_dql: <query>
   agent_answer_key:
     service: third-party-service
-    method: FactoryProductionLine#reserveSlot
+    method: LegacyMainframeBridge#transmit
     classification: lock-contention
 ```
 
