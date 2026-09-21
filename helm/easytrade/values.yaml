@@ -115,8 +115,11 @@ credit-card-order-service:
   env:
     PROXY_PREFIX: "credit-card-order-service"
     THIRD_PARTY_SERVICE_HOSTANDPORT: "{{ .Release.Name }}-third-party-service:8080"
-    WORK_DELAY: "300"
-    WORK_RATE: "900"
+    # UC1 (CPU-hotspot eval): fast scheduler cadence keeps the OrdersOverview
+    # cache invalidated on the hot path so the O(N^2) build stays profileable.
+    # (Chart default 300/900 dials this down and must NOT be relied on for UC1.)
+    WORK_DELAY: "5"
+    WORK_RATE: "10"
     JAVA_TOOL_OPTIONS: "-XX:-OmitStackTraceInFastThrow"
     FEATURE_FLAG_SERVICE_PROTOCOL: http
     FEATURE_FLAG_SERVICE_BASE_URL: "{{ .Release.Name }}-feature-flag-service"
@@ -125,6 +128,29 @@ credit-card-order-service:
     MSSQL_CONNECTIONSTRING:
       name: "{{ .Release.Name }}-connection-strings"
       key: "JAVA_CONNECTION_STRING"
+  # UC1 self-heal: the O(N^2) build on a 0.5-core limit under concurrency can
+  # exhaust the Tomcat worker pool and wedge the JVM (Running/Ready but serving
+  # nothing -> CPU idle -> no profiling hotspot). A wedge blocks every worker
+  # thread, so an HTTP probe that needs a worker (here the static swagger page,
+  # which does NOT trigger the build) times out and restarts the pod. Thresholds
+  # are generous so a legitimately busy build (seconds) never trips them; only a
+  # sustained (~90s) lockup does.
+  livenessProbe:
+    httpGet:
+      path: /swagger-ui/index.html
+      port: 8080
+    initialDelaySeconds: 90
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    httpGet:
+      path: /swagger-ui/index.html
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
   resources:
     requests:
       cpu: 20m
