@@ -66,7 +66,7 @@ broker-service:
       cpu: 150m
       memory: 350Mi
     limits:
-      cpu: 600m
+      cpu: "1"
       memory: 350Mi
   service:
     enabled: true
